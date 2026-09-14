@@ -1,31 +1,52 @@
 # ============================================================
-# 仓库只纳入后端源码（backend/），其余目录与产物一律不提交
+# 白名单模式：只纳入「可运行项目」所需源码
+#   backend/  → FastAPI + LangGraph 后端
+#   frontend/ → Next.js 14 + TypeScript 前端
+#   其余目录、产物、密钥、缓存一律不入库
 # ============================================================
 
 # ---- 默认忽略根目录下的一切 ----
 /*
 !/.gitignore
+!/README.md
+!/方案概述.md
 !/backend/
+!/frontend/
 
-# ---- 后端目录内仍需排除的内容（后出现的规则优先）----
+# ============================================================
+# 以下为反选排除：gitignore 规则「后出现者优先」
+# ============================================================
 
-# 密钥：绝不入库
+# ---- 密钥：绝不入库 ----
 backend/.env
 backend/.env.local
+.env
+.env.local
 
-# 运行产物 / 输出
-backend/output/
-backend/_i2i_out/
-backend/*.json
-backend/_uvicorn*.log
-
-# Python 缓存与虚拟环境
+# ---- Python 缓存与虚拟环境 ----
 __pycache__/
 *.py[cod]
 .venv/
 venv/
 
-# 杂项
+# ---- 后端运行产物 ----
+backend/output/
+backend/_i2i_out/
+backend/*.json
+backend/_uvicorn*.log
+
+# ---- 前端依赖与构建产物 ----
+frontend/node_modules/
+frontend/.next/
+frontend/.next_bak*/
+frontend/out/
+frontend/tsconfig.tsbuildinfo
+frontend/_nextdev.log
+
+# ---- 一次性脚本（效果已固化进源码）----
+frontend/_patch_failed_score.py
+
+# ---- 杂项 ----
 *.log
 .DS_Store
 Thumbs.db
