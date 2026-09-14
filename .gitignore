@@ -1,0 +1,31 @@
+# ============================================================
+# 仓库只纳入后端源码（backend/），其余目录与产物一律不提交
+# ============================================================
+
+# ---- 默认忽略根目录下的一切 ----
+/*
+!/.gitignore
+!/backend/
+
+# ---- 后端目录内仍需排除的内容（后出现的规则优先）----
+
+# 密钥：绝不入库
+backend/.env
+backend/.env.local
+
+# 运行产物 / 输出
+backend/output/
+backend/_i2i_out/
+backend/*.json
+backend/_uvicorn*.log
+
+# Python 缓存与虚拟环境
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 杂项
+*.log
+.DS_Store
+Thumbs.db
