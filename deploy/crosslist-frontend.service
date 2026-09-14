@@ -1,0 +1,49 @@
+# ============================================================
+# CrossList AI 前端服务（Next.js 14）
+# 安装：sudo cp deploy/crosslist-frontend.service /etc/systemd/system/
+#       sudo systemctl daemon-reload && sudo systemctl enable --now crosslist-frontend
+#
+# 启动前必须先在 /opt/crosslist/frontend 执行过 npm ci && npm run build
+# （next start 不会编译，没有 .next 目录会直接退出）
+# ============================================================
+[Unit]
+Description=CrossList AI Frontend (Next.js)
+# 前端启动后要读后端的 /api/meta 才能渲染平台清单，所以排在后端之后
+After=network-online.target crosslist-backend.service
+Wants=network-online.target crosslist-backend.service
+
+[Service]
+Type=simple
+User=crosslist
+Group=crosslist
+WorkingDirectory=/opt/crosslist/frontend
+
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=127.0.0.1
+
+# 仅「跨机部署」需要：让 Next 服务端把 /api 反向代理到远端后端 IP。
+# ⚠️ rewrites 是在 `npm run build` 时固化进 .next/routes-manifest.json 的，
+#    所以真正生效的是【构建时的】BACKEND_ORIGIN；这里只是显式记录当前值。
+#    改动后必须重新 build，重启进程无效。
+# 同机 + nginx 单入口（方案 A）时 nginx 已直接接管 /api，本项实际不参与请求链路。
+Environment=BACKEND_ORIGIN=http://127.0.0.1:8000
+
+# 用绝对路径直接拉起 next，避免 npm 中间进程导致 systemd 停不干净。
+# 若 Node 是用 nvm 装的，替换成 like: /home/crosslist/.nvm/versions/node/v20.19.0/bin/node
+ExecStart=/usr/bin/node node_modules/next/dist/bin/next start -p 3000 -H 127.0.0.1
+
+Restart=always
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=15
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=crosslist-frontend
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -10,8 +10,10 @@
 !/.gitignore
 !/README.md
 !/方案概述.md
+!/DEPLOY.md
 !/backend/
 !/frontend/
+!/deploy/
 
 # ============================================================
 # 以下为反选排除：gitignore 规则「后出现者优先」
@@ -33,7 +35,11 @@ venv/
 backend/output/
 backend/_i2i_out/
 backend/*.json
-backend/_uvicorn*.log
+
+# ---- 后端根目录下的临时文件 ----
+# 只保留 _*.py 开发/测试脚本，其余 _* （生成的对比图、日志、临时 jobId 等）一律忽略
+backend/_*
+!backend/_*.py
 
 # ---- 前端依赖与构建产物 ----
 frontend/node_modules/
@@ -45,6 +51,10 @@ frontend/_nextdev.log
 
 # ---- 一次性脚本（效果已固化进源码）----
 frontend/_patch_failed_score.py
+
+# ---- deploy/ 只放模板，真实环境文件禁止入库 ----
+deploy/*.env
+deploy/.env*
 
 # ---- 杂项 ----
 *.log
