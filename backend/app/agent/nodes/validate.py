@@ -22,19 +22,28 @@ _SYSTEM = "你是跨境电商 Listing 质量审核专家。只输出严格合法
 
 CONCURRENCY = 4
 
-# deepseek 的评分输出（中文点评+建议）比 qwen 啰嗦，800 会把 JSON 截断导致解析失败
-MAX_TOKENS_SCORE = 2000
+# deepseek 的评分输出（中文点评+建议）比 qwen 啰嗦，800 会把 JSON 截断导致解析失败。
+# 思维链 token 与正文共享此预算（见 listing.py 注释），留足余量防思考吃光预算
+MAX_TOKENS_SCORE = 4000
 
 
 def _card_digest(card: dict) -> str:
-    """只把评分真正需要的字段传给模型，避免每轮重发整张知识卡片"""
+    """评分模型的事实基准，必须完整覆盖 listing 生成时可引用的全部事实。
+
+    此前只传前 8 条 specs：防水/认证等排在后面的真实规格对评分模型不可见，
+    被误判为「编造卖点」→ 升级 error → fix 闭环把真卖点从 Listing 里删掉
+    （实测 IPX5、CE/FCC/RoHS 均中招）。specs 全量传入；包装清单与原始描述
+    是提示词明确要求核对的事实维度，一并传入。
+    """
     specs = card.get("specs") or []
     return json.dumps(
         {
             "product_name": card.get("product_name_en") or card.get("product_name_zh"),
             "category": card.get("category"),
             "core_selling_points": card.get("core_selling_points") or [],
-            "specs": [f"{s.get('name')}={s.get('value')}" for s in specs][:8],
+            "specs": [f"{s.get('name')}={s.get('value')}" for s in specs][:40],
+            "package_contents": card.get("package_contents") or "",
+            "description": (card.get("description") or "")[:300],
         },
         ensure_ascii=False,
     )
@@ -60,8 +69,14 @@ Listing 内容：
 
 【事实一致性 · 重点】逐条核对 Listing 中的**事实性声明**是否能在「商品参考信息」中找到依据，包括：
 配件与赠品（如发光件、替换手型、支架、收纳盒）、数量与件数、材质、尺寸/重量/容量、
-适用年龄、认证与检测、性能承诺。凡参考信息中不存在、也无合理推断依据的，即为**编造卖点**，
-必须写进 issues；数量被改动（如参考 18cm 写成 15cm）同样算不一致。
+接口/端口类型（USB-C、Type-C 等）、充电方式与充电次数、防水防尘等级、适用年龄、认证与检测、性能承诺。
+
+判定标准（**必须与生成侧口径一致，避免把正常表述误判为编造**）：
+- 算**有依据**，不得写进 issues：① 参考信息中直接写到的；② 对参考信息数值做纯算术或单位换算
+  （如参考"单次续航 6 小时"，写"24 小时（4 次充电）"属换算）；③ 参考信息参数的同义改写。
+- 算**编造**：引入了参考信息中不存在的新参数、配件、赠品、认证、等级、服务或数值。例如参考信息只有
+  "充电仓容量 400mAh"，写"支持无线充电""可充电 4 次""IPX5 防水"均属编造；数量被改动
+  （如参考 18cm 写成 15cm）同样算不一致。
 语言风格、语法、标点问题不要写进 issues（那是评分维度）。
 
 输出 JSON（comments 与 suggestions 用中文，合计控制在 80 字内）：

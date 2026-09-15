@@ -165,6 +165,18 @@ export default function PreviewView({
         </div>
       </div>
 
+      {/* 任务级告警：外观来源、脱敏重试、降级占位图等，直接影响结果可信度，必须让人看到 */}
+      {(job.warnings ?? []).length > 0 && (
+        <div className="notice multi" style={{ marginBottom: 14 }}>
+          <Icon name="alert" size={14} />
+          <div>
+            {(job.warnings ?? []).map((w, i) => (
+              <div key={i}>{w}</div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 平台切换 */}
       <div className="tabs-pill" style={{ marginBottom: 18 }}>
         {platforms.map((x) => {
@@ -348,6 +360,14 @@ export default function PreviewView({
                     <br />
                     鼠标悬停图片上的角标，可查看该张的具体处理方式。
                   </div>
+                </div>
+              )}
+              {allImages.length > 0 && (
+                <div className="hint" style={{ marginBottom: 12 }}>
+                  <Icon name="wand" size={12} />
+                  {allImages.some((i) => (i.prompt ?? '').includes('reference photo'))
+                    ? '已按上传的实拍图生成：画面中的商品外观、配色与结构以实拍图为准'
+                    : '未使用实拍图：本组素材按文字描述生成，商品外观为模型推断，建议上传实拍图后重跑'}
                 </div>
               )}
               {allImages.length > 0 && (

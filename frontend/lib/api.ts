@@ -7,8 +7,24 @@ import type {
 
 const jsonHeaders = { 'Content-Type': 'application/json' }
 
+/** 带 HTTP 状态码的错误：调用方需要区分「404 任务已不在内存」和普通网络抖动 */
+export class ApiError extends Error {
+  status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, init)
+  let res: Response
+  try {
+    res = await fetch(path, init)
+  } catch (e) {
+    // fetch 本身失败（断网 / 后端未启动）：status=0，供调用方与 404 区分
+    throw new ApiError((e as Error)?.message || '网络请求失败', 0)
+  }
   const text = await res.text()
   let data: unknown = null
   try {
@@ -21,7 +37,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       (data && typeof data === 'object' && 'detail' in data
         ? String((data as { detail: unknown }).detail)
         : null) || text || `请求失败（${res.status}）`
-    throw new Error(msg)
+    throw new ApiError(msg, res.status)
   }
   return data as T
 }

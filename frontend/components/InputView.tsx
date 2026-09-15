@@ -33,6 +33,26 @@ const IMG_MAX_SIDE = 1600
 const IMG_KEEP_BYTES = 400 * 1024 // 小于 400KB 保留原图
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'AUD']
 
+/**
+ * 模型最容易"编造"的六类事实 —— 实测生成的 Listing 里凭空出现了
+ * 「0.2lb 重量」「附赠 2 节 AAA 电池」「含测试探针」这类卡片里根本没有的信息。
+ * 根因是提示词要求写满卖点，而这些字段又没有依据，模型只能补全。
+ * 这里把它们显式提示出来，引导用户把事实补进规格/描述，从源头减少编造。
+ * 正则只做"有没有提到"的宽松判断，用于给反馈，不参与校验。
+ */
+const KEY_FACTS: { label: string; tip: string; pat: RegExp }[] = [
+  { label: '尺寸', tip: '长×宽×高', pat: /尺寸|长[×x*]宽|\d\s?(cm|mm|inch|in)\b/i },
+  { label: '重量', tip: '整机重量', pat: /重量|克重|\d\s?(g|kg|lb|oz)\b/i },
+  {
+    label: '材质',
+    tip: '外壳/接触材质',
+    pat: /材质|材料|ABS|PC\b|硅胶|金属|不锈钢|铝合金|塑料|皮革|织物|聚酯|尼龙/i,
+  },
+  { label: '供电/电池', tip: '电池容量或供电方式', pat: /电池|mAh|毫安|充电|供电|续航|USB|Type-?C|AAA|锂/i },
+  { label: '包装清单', tip: '盒内都有什么', pat: /包装|清单|配件|附赠|随附|包含|内含|套装|说明书|数据线/i },
+  { label: '认证', tip: '有则填，没有留空', pat: /认证|CE\b|FCC|RoHS|UL\b|3C\b|质检|检测报告/i },
+]
+
 /** 压缩实拍图：长边 ≤ IMG_MAX_SIDE、JPEG 85%（小图保留原图），避免多张大原图撑爆请求体 */
 function compressImage(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -78,6 +98,7 @@ export default function InputView({ meta, starting, onStart, onOpenConfig }: Pro
   const dragDepth = useRef(0)
   const [imgWarn, setImgWarn] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
+  const specsRef = useRef<HTMLTextAreaElement>(null)
 
   const toggle = (list: string[], set: (v: string[]) => void, key: string) => {
     set(list.includes(key) ? list.filter((x) => x !== key) : [...list, key])
@@ -171,8 +192,18 @@ export default function InputView({ meta, starting, onStart, onOpenConfig }: Pro
   const marketList = meta?.markets ?? []
   const descOverflow = description.length > DESC_MAX
   const descThin = description.trim().length < DESC_SOFT_MIN
-  const specLines = specs.split('\n').filter((l) => l.trim().length > 0)
   const priceNum = price.trim() === '' ? null : Number(price)
+
+  // 关键事实覆盖度：规格 + 描述一起判断（用户在哪儿写了都算）
+  const factsText = `${specs}\n${description}`
+  const factsMissing = KEY_FACTS.filter((f) => !f.pat.test(factsText))
+  const factsCovered = KEY_FACTS.length - factsMissing.length
+  const factsThin = factsMissing.length >= 3
+
+  const insertFact = (label: string) => {
+    setSpecs((s) => (s.trim() ? `${s.replace(/\s+$/, '')}\n${label}：` : `${label}：`))
+    window.setTimeout(() => specsRef.current?.focus(), 0)
+  }
 
   const valid = useMemo(
     () =>
@@ -330,22 +361,43 @@ export default function InputView({ meta, starting, onStart, onOpenConfig }: Pro
               <div className="field">
                 <label className="form-label">
                   <span>规格参数</span>
-                  <span className="counter">
-                    {specLines.length > 0 ? `已填 ${specLines.length} 行` : '选填'}
+                  <span className={`counter${factsThin ? ' over' : ''}`}>
+                    关键信息 {factsCovered}/{KEY_FACTS.length}
                   </span>
                 </label>
                 <textarea
+                  ref={specsRef}
                   className="textarea"
                   value={specs}
-                  rows={2}
+                  rows={3}
                   placeholder={
                     '直接粘贴供应商参数表即可，如：\n产品尺寸：15.2 × 8.4 × 3.1 cm\n重量：4.2g\n材质：ABS + 硅胶\n蓝牙：5.3'
                   }
                   onChange={(e) => setSpecs(e.target.value)}
                 />
-                <div className="hint">
-                  <Icon name="ruler" size={12} />
-                  格式随意，粘贴参数表即可 · 尺寸/重量/材质等参数会用于规格图与上传模板
+                {/* 这几类事实缺失时模型最爱自行编造，点一下即可插入字段名 */}
+                <div className="fact-chips">
+                  {KEY_FACTS.map((f) => {
+                    const on = !factsMissing.includes(f)
+                    return (
+                      <button
+                        key={f.label}
+                        type="button"
+                        className={`fact-chip${on ? ' on' : ''}`}
+                        onClick={() => insertFact(f.label)}
+                        title={on ? `${f.label}（已提供）· ${f.tip}` : `缺「${f.label}」（${f.tip}）· 点击插入`}
+                      >
+                        <Icon name={on ? 'check' : 'plus'} size={10} strokeWidth={2.8} />
+                        {f.label}
+                      </button>
+                    )
+                  })}
+                </div>
+                <div className={`hint${factsThin ? ' warn' : ''}`}>
+                  <Icon name={factsThin ? 'alert' : 'ruler'} size={12} />
+                  {factsMissing.length === 0
+                    ? '关键信息已齐备，模型无需靠推测补全参数'
+                    : `还缺 ${factsMissing.map((f) => f.label).join('、')} —— 缺项没有依据时，模型容易自行编造（例如凭空写上「附赠电池」「0.2lb 重量」）`}
                 </div>
               </div>
             </div>
@@ -659,7 +711,7 @@ export default function InputView({ meta, starting, onStart, onOpenConfig }: Pro
 
               {/* 仅在无法生成时提示；槽位常驻占位，避免出现/消失导致下方内容跳动 */}
               <div className="notice-slot">
-                {!valid && (
+                {!valid ? (
                   <div className="notice info">
                     <Icon name="info" size={14} />
                     <span>
@@ -670,7 +722,16 @@ export default function InputView({ meta, starting, onStart, onOpenConfig }: Pro
                           : '请至少选择 1 个平台和市场'}
                     </span>
                   </div>
-                )}
+                ) : factsThin ? (
+                  /* 不阻断提交：只说明代价。规格越空，模型越要靠推测补全，编造卖点就出在这里 */
+                  <div className="notice info">
+                    <Icon name="info" size={14} />
+                    <span>
+                      规格信息偏少（缺 {factsMissing.map((f) => f.label).join('、')}）：
+                      生成结果可能出现与实物不符的参数，建议补充后再提交
+                    </span>
+                  </div>
+                ) : null}
               </div>
 
               <div className="hint" style={{ marginTop: 8, justifyContent: 'center' }}>

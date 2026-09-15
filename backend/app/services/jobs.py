@@ -38,6 +38,8 @@ class JobManager:
         self.llm = llm
         self.storage = storage
         self.jobs: dict[str, Job] = {}
+        # 并发上限：超出的任务排队（状态保持 queued），避免多任务 LLM 调用叠加触发限流
+        self._sem = asyncio.Semaphore(max(1, settings.job_max_concurrency))
 
     # ---------------- 生命周期 ----------------
     def create(self, params: dict) -> Job:
@@ -51,11 +53,21 @@ class JobManager:
         return self.jobs.get(job_id)
 
     async def _run(self, job: Job) -> None:
-        job.status = "running"
-        job.started_at = time.time()
-        state = new_state(job.id, job.params, job.emitter, self.llm, self.storage)
-        await job.emitter.emit("start", steps=job.emitter.snapshot_steps())
+        acquired = False
         try:
+            # 排队等待并发槽位：期间状态保持 queued（前端会正常显示等待中）
+            await self._sem.acquire()
+            acquired = True
+            # 排队期间可能已被取消：直接收敛，不再执行
+            if job.emitter.finished:
+                job.status = "cancelled"
+                job.finished_at = time.time()
+                await job.emitter.fail("任务已取消")
+                return
+            job.status = "running"
+            job.started_at = time.time()
+            state = new_state(job.id, job.params, job.emitter, self.llm, self.storage)
+            await job.emitter.emit("start", steps=job.emitter.snapshot_steps())
             final = await run_agent(state)
             job.result = {
                 "plan": final.get("plan") or {},
@@ -70,6 +82,8 @@ class JobManager:
             job.finished_at = time.time()
             await job.emitter.done(job.result)
         except asyncio.CancelledError:
+            # 含排队中被取消的情况：必须收敛状态并推送 fail，
+            # 否则前端看门狗会一直看到 queued、永远无法结束
             job.status = "cancelled"
             job.finished_at = time.time()
             await job.emitter.fail("任务已取消")
@@ -78,13 +92,21 @@ class JobManager:
             job.error = str(e)
             job.finished_at = time.time()
             await job.emitter.fail(str(e))
+        finally:
+            if acquired:
+                self._sem.release()
 
     def cancel(self, job_id: str) -> bool:
         job = self.jobs.get(job_id)
-        if not job or not job.task:
+        if not job or not job.task or job.task.done():
             return False
         job.emitter.finished = True   # 通知条件边尽早退出（通过 state 也有一层判断）
         job.task.cancel()
+        # 兜底：task 尚未首次调度时，CancelledError 不会进入协程体，
+        # 状态会永远停在 queued。这里同步收敛（前端对 cancelled 走快照收敛，不依赖 fail 事件）
+        if job.status == "queued":
+            job.status = "cancelled"
+            job.finished_at = time.time()
         return True
 
     # ---------------- 快照 ----------------

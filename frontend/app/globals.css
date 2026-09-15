@@ -770,6 +770,41 @@ a {
   color: var(--warn-600);
 }
 
+/* 关键信息提示 chips：告诉用户"模型需要哪些事实"，缺哪项就容易自行编造。
+   选中态一律白底 + 细描边（品牌橙），符合设计系统，不用黑底填充块。 */
+.fact-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+.fact-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--ink-200);
+  background: var(--surface);
+  color: var(--ink-400);
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: all var(--dur-2) var(--ease);
+}
+.fact-chip:hover {
+  border-color: var(--ink-300);
+  color: var(--ink-600);
+}
+.fact-chip.on {
+  border-color: var(--brand-500);
+  color: var(--brand-600);
+  background: var(--brand-50);
+}
+.fact-chip.on:hover {
+  border-color: var(--brand-600);
+}
+
 /* 「建议填写」软必填标签（区别于 .req 红星硬必填） */
 .opt-tag {
   display: inline-block;

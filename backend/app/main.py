@@ -30,6 +30,8 @@ async def lifespan(app: FastAPI):
     cleaner = start_cleanup_task(app)
     yield
     cleaner.cancel()
+    # 释放 LlmClient 复用的连接池
+    await app.state.llm.aclose()
 
 
 def create_app() -> FastAPI:
@@ -52,12 +54,22 @@ def create_app() -> FastAPI:
     def init_runtime() -> None:
         """初始化（或配置变更后重建）运行期对象"""
         st = get_settings()
+        old_llm = getattr(app.state, "llm", None)
         llm = LlmClient(st)
         storage = Storage(st)
         app.state.settings = st
         app.state.llm = llm
         app.state.storage = storage
         app.state.jobs = JobManager(st, llm, storage)
+        # 配置变更重建时，异步关闭旧实例的连接池
+        # （首次初始化发生在 import 期、无运行中事件循环，此时旧实例必然为 None）
+        if old_llm is not None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                loop.create_task(old_llm.aclose())
 
     app.state.reload = init_runtime
     init_runtime()

@@ -142,17 +142,26 @@ def _base_variants(
     - 无参考图时：三级都是纯文生图，与原行为一致。
     图像模型对动漫/品牌 IP 类商品会返回 IPInfringementSuspect 直接拒绝，
     因此逐级去掉 IP 特征词重试。
+
+    ⚠️ 有参考图时**绝不能把文字里的颜色/材质写进提示词**：
+    文字描述一旦与照片冲突（知识卡片的颜色可能来自纯文本猜测，见 parse.py 的
+    _appearance_unreadable），模型会优先听文字 —— 实测白色实拍图 + 提示词里写
+    「identical colors/finish (黑色)」必然出黑图。有图时外观的唯一依据就是图。
     """
     cat = _generic_subject(card)
     vf = card.get("visual_features") or {}
     cm = " ".join(str(vf[k]) for k in ("color", "material") if vf.get(k)).strip()
     cm = f" in {cm}" if cm and not _has_cjk(cm) else ""
 
-    # 图生图基准描述：明确要求「照抄参考照里的那件商品」，否则模型容易重新设计
+    # 图生图基准描述：明确要求「照抄参考照里的那件商品」，否则模型容易重新设计。
+    # 显式声明「底色/场景看下一条指令、不要照搬参考图背景」，
+    # 否则 #FFFFFF 白底主图会被参考图自身的背景带走。
     ref_lock = (
         "the EXACT product shown in the attached reference photo — keep its identical shape, "
-        "proportions, colors, materials, surface finish and every visible detail; "
-        "do not redesign, restyle or substitute it with a different product"
+        "proportions, colors, materials, surface finish, pattern and every visible detail; "
+        "do not redesign, restyle, recolor or substitute it with a different product. "
+        "Reproduce only the product itself: ignore the background and setting of the "
+        "reference photo and follow the scene described below instead"
     )
     v3 = (
         f"a plain generic unbranded {cat}, simple studio product photograph, "
@@ -161,13 +170,18 @@ def _base_variants(
     v3_note = "已极简化重试（仅保留品类，未使用参考图）" if has_ref else "已极简化重试（仅保留品类）"
 
     if has_ref:
+        # 一致性锁不含任何文字颜色/材质（那正是压掉实拍图的元凶）；
+        # 对外观只做"以参考图为准"的指认。
         v1 = (
-            f"{ref_lock}.{consistency} "
+            f"{ref_lock}. The product must look exactly the same as in the reference photo — "
+            f"identical shape, proportions, color scheme, materials and every component, part "
+            f"and visible detail. Part of one coherent product photoshoot with consistent "
+            f"lighting and proportions. "
             f"high quality commercial product photography, sharp detail, "
             f"professional studio lighting, 8k"
         )
         v2 = (
-            f"{ref_lock}. a generic unbranded {cat}{cm}, original generic design, "
+            f"{ref_lock}. a generic unbranded {cat}, original generic design, "
             f"no logo, no brand name, no trademark, no copyrighted character likeness, no text, "
             f"high quality commercial product photography, professional studio lighting"
         )

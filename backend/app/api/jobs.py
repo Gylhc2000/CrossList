@@ -42,6 +42,24 @@ def _mgr(request: Request):
 
 NAME_MAX = 80
 DESC_MAX = 1200
+SPECS_MAX = 4000
+CATEGORY_MAX = 40
+# 图片防线（前端压缩后单张约 0.2~0.5MB，这里按 data URL 字符数限，
+# base64 约为原始体积的 4/3）：单张 ≈4MB、合计 ≈12MB，拦截绕过前端的超大请求体
+IMG_URL_MAX_CHARS = 5_500_000
+IMGS_TOTAL_MAX_CHARS = 16_500_000
+
+
+def _validate_images(images: list[str]) -> list[str]:
+    total = 0
+    for u in images:
+        n = len(u)
+        if n > IMG_URL_MAX_CHARS:
+            raise HTTPException(400, "单张图片过大，请上传 4MB 以内的图片")
+        total += n
+        if total > IMGS_TOTAL_MAX_CHARS:
+            raise HTTPException(400, "图片总量过大，合计请控制在 12MB 以内")
+    return images
 
 
 @router.post("/jobs")
@@ -55,6 +73,12 @@ async def create_job(body: JobCreate, request: Request):
     desc = body.description.strip()
     if len(desc) > DESC_MAX:
         raise HTTPException(400, f"商品描述不能超过 {DESC_MAX} 字")
+    specs = body.specs.strip()
+    if len(specs) > SPECS_MAX:
+        raise HTTPException(400, f"规格参数不能超过 {SPECS_MAX} 字")
+    category = body.category.strip()
+    if len(category) > CATEGORY_MAX:
+        raise HTTPException(400, f"商品类目不能超过 {CATEGORY_MAX} 字")
     brand = body.brand.strip()
     if len(brand) > 40:
         raise HTTPException(400, "品牌不能超过 40 字符")
@@ -86,9 +110,9 @@ async def create_job(body: JobCreate, request: Request):
 
     params = {
         "product_name": name,
-        "category": body.category or "未分类",
+        "category": category or "未分类",
         "description": desc,
-        "specs": body.specs or "",
+        "specs": specs,
         "brand": brand,
         "price": body.price,
         "currency": currency,
@@ -99,7 +123,7 @@ async def create_job(body: JobCreate, request: Request):
             f"{MARKET_BY_KEY[m].flag}{MARKET_BY_KEY[m].label}（{MARKET_BY_KEY[m].language}）"
             for m in markets
         ],
-        "images": body.images[:5],
+        "images": _validate_images(body.images[:5]),
         "with_images": body.withImages,
     }
     job = _mgr(request).create(params)

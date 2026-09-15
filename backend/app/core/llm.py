@@ -41,6 +41,26 @@ def _normalize_base(url: str) -> str:
     return url.rstrip("/")
 
 
+def _empty_content_diag(data: dict[str, Any]) -> str:
+    """空 content 的现场诊断。
+
+    实测（2026-09-15）：deepseek-v4-flash 在本网关默认**开启思维链**，
+    空 content 的典型现场是 `finish_reason=length` 且 completion_tokens 顶满 max_tokens
+    —— 思维链把预算吃光了。**加预算解决不了**（实测 4000 → 0/4、8000 → 0/3，
+    只是让每次失败从 40s 拖到 80s），正确做法是请求里带 `enable_thinking=false`
+    （见 Settings.llm_disable_thinking），关掉后同一 prompt 7s 稳定返回完整 JSON。
+    若 finish_reason=stop 但 content 为空，则属网关/模型侧异常，只能重试或换模型。
+    """
+    ch = (data.get("choices") or [{}])[0]
+    usage = data.get("usage") or {}
+    det = usage.get("completion_tokens_details") or {}
+    return (
+        f"finish_reason={ch.get('finish_reason')}，"
+        f"completion_tokens={usage.get('completion_tokens')}，"
+        f"reasoning_tokens={det.get('reasoning_tokens')}"
+    )
+
+
 class LlmClient:
     def __init__(self, settings: Settings, timeout: float = 120.0):
         self.settings = settings
@@ -48,6 +68,20 @@ class LlmClient:
         # 图像接口可独立配置（网关未代理 /images/generations 时指向其他地址）
         self.image_base = _normalize_base(settings.llm_image_base_url or settings.llm_base_url)
         self.timeout = timeout
+        # 复用连接池：listing/images 节点高频并发调用，避免每次请求重建 TCP+TLS
+        self._client: httpx.AsyncClient | None = None
+
+    @property
+    def client(self) -> httpx.AsyncClient:
+        # 懒创建：首次调用发生在事件循环内；被 aclose 后自动重建（config 测试的临时实例）
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self.timeout)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
 
     def _headers(self) -> dict[str, str]:
         if not self.settings.llm_api_key:
@@ -72,51 +106,62 @@ class LlmClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if self.settings.llm_disable_thinking:
+            # 关键：本网关的 deepseek-v4-flash **默认开启思维链**，思考会吃光整个
+            # max_tokens，content 返回空串（生成直接失败），单次还要 40~80s。
+            # 实测关掉后同一 prompt 稳定 7s 返回完整 JSON（7/7 成功）。
+            payload["enable_thinking"] = False
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
 
         last_err: Exception | None = None
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for attempt in range(retries + 1):
-                try:
-                    resp = await client.post(
-                        f"{self.base}/chat/completions",
-                        headers=self._headers(),
-                        json=payload,
-                    )
-                    if resp.status_code >= 400:
-                        # 某些模型不支持 response_format，去掉后重试
-                        if json_mode and resp.status_code == 400:
-                            payload.pop("response_format", None)
-                            continue
-                        raise LlmError(f"HTTP {resp.status_code}: {resp.text[:300]}")
-                    data = resp.json()
-                    choices = data.get("choices") or []
-                    if not choices:
-                        raise LlmError(f"接口未返回 choices：{str(data)[:200]}")
-                    content = (choices[0].get("message") or {}).get("content") or ""
-                    # 部分模型（如 deepseek-v4-flash）带 response_format 时对长 prompt
-                    # 返回 200 但 content 为空；去掉 json_object 重试一次。
-                    # 提示词本身已要求输出 JSON，降级不影响格式解析。
-                    if json_mode and not content.strip() and "response_format" in payload:
+        client = self.client
+        for attempt in range(retries + 1):
+            try:
+                resp = await client.post(
+                    f"{self.base}/chat/completions",
+                    headers=self._headers(),
+                    json=payload,
+                )
+                if resp.status_code >= 400:
+                    # 模型可能不支持 response_format / enable_thinking，逐个去掉后重试
+                    if resp.status_code == 400 and "response_format" in payload:
                         payload.pop("response_format", None)
                         continue
-                    # 网关偶发返回 200 空内容（与 json_mode 无关），按可重试错误处理；
-                    # 重试耗尽仍为空时必须抛错——返回空串会让下游拿到
-                    # 「模型未返回合法 JSON：（空）」，把好好的 Listing 打成 0 分。
-                    if not content.strip():
-                        if attempt < retries:
-                            last_err = LlmError("200 但 content 为空")
-                            await asyncio.sleep(1.0)
-                            continue
-                        raise LlmError("200 但 content 为空（重试耗尽）")
-                    return content
-                except LlmError:
-                    raise
-                except Exception as e:  # 网络类错误重试
-                    last_err = e
+                    if resp.status_code == 400 and "enable_thinking" in payload:
+                        payload.pop("enable_thinking", None)
+                        continue
+                    raise LlmError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+                data = resp.json()
+                choices = data.get("choices") or []
+                if not choices:
+                    raise LlmError(f"接口未返回 choices：{str(data)[:200]}")
+                content = (choices[0].get("message") or {}).get("content") or ""
+                # 部分模型（如 deepseek-v4-flash）带 response_format 时对长 prompt
+                # 返回 200 但 content 为空；去掉 json_object 重试一次。
+                # 提示词本身已要求输出 JSON，降级不影响格式解析。
+                if json_mode and not content.strip() and "response_format" in payload:
+                    payload.pop("response_format", None)
+                    continue
+                # ⚠️ 空 content 的处理必须写在这个缩进层级（与上面的 if 平级）。
+                # 曾因多缩进 4 格而变成上面分支的死代码：空响应既不重试也不报错，
+                # 空串被直接交给 extract_json，下游只看到「模型未返回合法 JSON：（空）」，
+                # 站点 Listing 就这么静默丢了。重试耗尽仍为空时必须抛错。
+                if not content.strip():
                     if attempt < retries:
-                        await asyncio.sleep(2.0)
+                        last_err = LlmError("200 但 content 为空")
+                        await asyncio.sleep(1.0)
+                        continue
+                    raise LlmError(
+                        f"200 但 content 为空（重试耗尽。{_empty_content_diag(data)}）"
+                    )
+                return content
+            except LlmError:
+                raise
+            except Exception as e:  # 网络类错误重试
+                last_err = e
+                if attempt < retries:
+                    await asyncio.sleep(2.0)
         # 把异常类型带上，便于定位是超时/连接拒绝还是其他
         detail = f"{type(last_err).__name__}: {last_err}" if last_err else "未知错误"
         raise LlmError(f"调用对话接口失败：{detail}")
@@ -178,23 +223,23 @@ class LlmClient:
             "input": {"messages": [{"role": "user", "content": content}]},
             "parameters": params,
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(url, headers=self._headers(), json=payload)
-            if resp.status_code >= 400:
-                raise LlmError(f"HTTP {resp.status_code}: {resp.text[:200]}")
-            d = resp.json()
-            if d.get("code"):
-                raise LlmError(f"{d['code']}: {str(d.get('message', ''))[:200]}")
-            try:
-                img_url = d["output"]["choices"][0]["message"]["content"][0]["image"]
-            except (KeyError, IndexError, TypeError):
-                raise LlmError(f"图像接口返回结构异常：{str(d)[:200]}")
-            if not img_url:
-                raise LlmError("图像接口未返回 image URL")
-            img = await client.get(img_url)
-            if img.status_code >= 400:
-                raise LlmError(f"下载生成图像失败 HTTP {img.status_code}")
-            return img.content
+        client = self.client
+        resp = await client.post(url, headers=self._headers(), json=payload)
+        if resp.status_code >= 400:
+            raise LlmError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+        d = resp.json()
+        if d.get("code"):
+            raise LlmError(f"{d['code']}: {str(d.get('message', ''))[:200]}")
+        try:
+            img_url = d["output"]["choices"][0]["message"]["content"][0]["image"]
+        except (KeyError, IndexError, TypeError):
+            raise LlmError(f"图像接口返回结构异常：{str(d)[:200]}")
+        if not img_url:
+            raise LlmError("图像接口未返回 image URL")
+        img = await client.get(img_url)
+        if img.status_code >= 400:
+            raise LlmError(f"下载生成图像失败 HTTP {img.status_code}")
+        return img.content
 
     async def _image_via_openai(
         self, prompt: str, model: str | None, size: str
@@ -206,28 +251,28 @@ class LlmClient:
             "size": size,
             "n": 1,
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(
-                f"{self.image_base}/images/generations",
-                headers=self._headers(),
-                json=payload,
+        client = self.client
+        resp = await client.post(
+            f"{self.image_base}/images/generations",
+            headers=self._headers(),
+            json=payload,
+        )
+        if resp.status_code >= 400:
+            raise LlmError(
+                f"HTTP {resp.status_code}: {resp.text[:200]}"
+                f"（图像接口 {self.image_base}/images/generations）"
             )
-            if resp.status_code >= 400:
-                raise LlmError(
-                    f"HTTP {resp.status_code}: {resp.text[:200]}"
-                    f"（图像接口 {self.image_base}/images/generations）"
-                )
-            data = resp.json()
-            items = data.get("data") or []
-            if not items:
-                raise LlmError(f"图像接口未返回数据：{str(data)[:200]}")
-            item = items[0]
-            if item.get("b64_json"):
-                return base64.b64decode(item["b64_json"])
-            if item.get("url"):
-                img = await client.get(item["url"])
-                return img.content
-            raise LlmError("图像接口既无 b64_json 也无 url")
+        data = resp.json()
+        items = data.get("data") or []
+        if not items:
+            raise LlmError(f"图像接口未返回数据：{str(data)[:200]}")
+        item = items[0]
+        if item.get("b64_json"):
+            return base64.b64decode(item["b64_json"])
+        if item.get("url"):
+            img = await client.get(item["url"])
+            return img.content
+        raise LlmError("图像接口既无 b64_json 也无 url")
 
     async def ping(self) -> dict[str, Any]:
         """连通性测试：发一条极短消息"""

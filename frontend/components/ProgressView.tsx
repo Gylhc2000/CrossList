@@ -83,12 +83,16 @@ export default function ProgressView({ job, elapsed, onCancel, onViewResult }: P
           </p>
         </div>
         <div className="page-head-aside">
-          <span className="badge badge-neutral">
-            <Icon name="clock" size={11} />
-            {job?.status === 'done'
-              ? `用时 ${fmtDuration(durationSec)}`
-              : `已运行 ${fmtDuration(durationSec)}`}
-          </span>
+          {/* 拿不到可信用时就不显示（例如任务状态已丢失时，前端计时器会把等待重连的时间也算进去，
+              显示成"已运行 70 分钟"是误导） */}
+          {durationSec != null && (
+            <span className="badge badge-neutral">
+              <Icon name="clock" size={11} />
+              {job?.status === 'done'
+                ? `用时 ${fmtDuration(durationSec)}`
+                : `已运行 ${fmtDuration(durationSec)}`}
+            </span>
+          )}
           <button
             className="btn btn-danger btn-sm"
             onClick={onCancel}

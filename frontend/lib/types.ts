@@ -139,6 +139,8 @@ export interface ImageAsset {
   error?: string
   note?: string
   group: 'main' | 'detail'
+  /** 实际送模型的提示词：含 "reference photo" 即说明这张是带实拍参考图生成的 */
+  prompt?: string
 }
 
 export interface JobReport {

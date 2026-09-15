@@ -8,7 +8,7 @@ import InputView, { type StartPayload } from '@/components/InputView'
 import PreviewView from '@/components/PreviewView'
 import ProgressView from '@/components/ProgressView'
 import { Icon, ToastStack, type IconName, type ToastItem } from '@/components/ui'
-import { api, streamUrl } from '@/lib/api'
+import { ApiError, api, streamUrl } from '@/lib/api'
 import type { AppConfig, JobSnapshot, MetaResponse, PlatformFiles, SseEvent } from '@/lib/types'
 
 type ViewName = 'input' | 'progress' | 'preview' | 'download'
@@ -39,8 +39,16 @@ const STEPS: { key: ViewName; label: string; icon: IconName }[] = [
 
 function applyEvent(prev: JobSnapshot, e: SseEvent): JobSnapshot {
   switch (e.type) {
-    case 'hello':
-      return e.job
+    case 'hello': {
+      // 重连时服务端会重发权威快照。注意：运行中的快照 result 是空的
+      // （结果只在终态才写进 JobManager），整体替换会把 SSE 已累积的
+      // listings/images 冲掉 —— 所以快照没带 result 时保留本地已收到的部分。
+      const j = e.job
+      return {
+        ...j,
+        result: Object.keys(j.result ?? {}).length ? j.result : prev.result,
+      }
+    }
     case 'step': {
       const steps = [...prev.steps]
       steps[e.index] = {
@@ -139,12 +147,85 @@ export default function Home() {
     }
   }, [])
 
+  // 任务终态收尾：切到第一个站点、拉产物、跳结果页
+  const onJobDone = useCallback(
+    (result: JobSnapshot['result'], jobId: string) => {
+      const first = result.platforms?.[0]?.key
+      if (first) setActiveTab(first)
+      void fetchFiles(jobId)
+      setView('preview')
+      pushToast('素材包生成完成，已自动跳转结果预览', 'ok')
+    },
+    [fetchFiles, pushToast],
+  )
+
   const openStream = useCallback(
     (jobId: string) => {
       esRef.current?.close()
       const es = new EventSource(streamUrl(jobId))
       esRef.current = es
+
+      let stopped = false
+      let probing = false
+      let finalized = false
+      let failures = 0
+      let watchdog = 0
+      const stop = () => {
+        stopped = true
+        if (watchdog) window.clearInterval(watchdog)
+        es.close()
+      }
+      const finalize = (result: JobSnapshot['result'], a?: number | null, b?: number | null) => {
+        if (finalized) return
+        finalized = true
+        // 用服务端时间戳定格用时，避免前端计时器把"等待重连"的时间也算进去
+        if (a != null && b != null) setElapsed(Math.max(0, Math.round(b - a)))
+        onJobDone(result ?? {}, jobId)
+      }
+      const loseTask = (msg: string) => {
+        setJob((prev) => (prev ? { ...prev, status: 'error', error: msg } : prev))
+        pushToast(msg, 'err')
+        stop()
+      }
+
+      // 事件流断了必须能收敛。后端重启后 JobManager（内存态）里已没有这个任务，
+      // 前端只会拿到 404 —— 若不管，UI 会永远停在 running：计时器一路涨到
+      // "已运行 70 分钟"、进度节点永远不打勾。
+      // 注意**不能只靠 es.onerror**：实测杀掉后端后浏览器只重连了一次便不再重试
+      // （连接被拒会退避/放弃），靠 error 驱动的对账最多跑两次就断了。
+      // 所以这里由看门狗定时主动对账，直到任务进入终态。
+      const probe = async () => {
+        // 已被新任务顶替的旧事件流不得再回写状态
+        if (probing || stopped || esRef.current !== es) return
+        probing = true
+        try {
+          const snap = await api.snapshot(jobId)
+          failures = 0
+          // 仍在进行中：不回写快照。运行期的快照 result 是空的（结果只在终态才落到 JobManager），
+          // 直接替换会把 SSE 已经累积出来的 listings/images 冲掉。
+          if (snap.status === 'running' || snap.status === 'queued') return
+          setJob(snap)
+          if (snap.status === 'done') {
+            finalize(snap.result, snap.started_at, snap.finished_at)
+          }
+          stop()
+        } catch (e) {
+          if (e instanceof ApiError && e.status === 404) {
+            // 后端活着但这个任务已不在内存里（重启过）—— 明确收敛
+            loseTask('任务状态已丢失（后端已重启），请重新运行')
+          } else {
+            // 瞬时断网 / 后端正在重启：连续多次失败才判定失联
+            failures += 1
+            if (failures >= 5) loseTask('与后端连接中断，任务状态无法确认，请刷新后重新运行')
+          }
+        } finally {
+          probing = false
+        }
+      }
+      watchdog = window.setInterval(() => void probe(), 15000)
+
       es.onmessage = (ev) => {
+        if (esRef.current !== es) return   // 旧流残余事件忽略，避免覆盖新任务状态
         let e: SseEvent
         try {
           e = JSON.parse(ev.data)
@@ -153,24 +234,31 @@ export default function Home() {
         }
         setJob((prev) => applyEvent(prev ?? emptyJob(), e))
         if (e.type === 'done') {
-          const first = e.result.platforms?.[0]?.key
-          if (first) setActiveTab(first)
-          void fetchFiles(jobId)
-          setView('preview')
-          pushToast('素材包生成完成，已自动跳转结果预览', 'ok')
-          es.close()
+          finalize(e.result, e.started_at, e.finished_at)
+          stop()
         } else if (e.type === 'fail') {
           pushToast('任务失败：' + e.error, 'err')
-          es.close()
+          stop()
         } else if (e.type === 'end') {
-          es.close()
+          stop()
+        } else if (e.type === 'hello') {
+          // 重连时服务端会把权威快照重发一遍：若任务其实已经结束，这里直接收敛
+          const snap = e.job
+          if (snap.status === 'done') {
+            finalize(snap.result, snap.started_at, snap.finished_at)
+            stop()
+          } else if (snap.status === 'error' || snap.status === 'cancelled') {
+            finalized = true
+            stop()
+          }
         }
       }
       es.onerror = () => {
-        /* 浏览器会自动重连 */
+        // 连接抖动时提前对账一次，不用等下一个看门狗周期
+        window.setTimeout(() => void probe(), 2000)
       }
     },
-    [fetchFiles, pushToast],
+    [onJobDone, pushToast],
   )
 
   const handleStart = async (payload: StartPayload) => {
@@ -203,6 +291,13 @@ export default function Home() {
       const snap = await api.snapshot(jobId)
       setJob(snap)
       setActiveTab(snap.result.platforms?.[0]?.key ?? '')
+      // 历史任务的用时按服务端时间戳还原，别沿用上一次运行残留的计时器
+      startRef.current = Date.now()
+      setElapsed(
+        snap.started_at != null && snap.finished_at != null
+          ? Math.max(0, Math.round(snap.finished_at - snap.started_at))
+          : 0,
+      )
       void fetchFiles(jobId)
       setView('preview')
       pushToast('已载入历史任务结果', 'ok')
@@ -212,14 +307,24 @@ export default function Home() {
   }
 
   const hasResult = (job?.result.platforms ?? []).length > 0
+  // 「运行中」的 result 只是边生成边补的半成品（platforms 在 validate 阶段就已经推送，
+  // 早于 fix/export）。若此时就允许进结果页，就会出现
+  //「处理进度还没走完、生成结果却已经能看」的错位。
+  // 结果页只在任务真正结束后开放；运行中想看产出用进度页的「实时产出」。
+  const resultReady = hasResult && job?.status !== 'running' && job?.status !== 'queued'
 
   const goto = (v: ViewName) => {
     if (v !== 'input' && !job) {
       pushToast('请先创建并运行一个任务', 'err')
       return
     }
-    if (v === 'preview' && !hasResult) {
-      pushToast('结果尚未生成，请先运行任务', 'err')
+    if (v === 'preview' && !resultReady) {
+      pushToast(
+        job?.status === 'running'
+          ? '任务还在执行中，可在进度页的「实时产出」查看已完成内容'
+          : '结果尚未生成，请先运行任务',
+        'err',
+      )
       return
     }
     setView(v)
@@ -229,13 +334,14 @@ export default function Home() {
     () => ({
       input: !!job,
       progress: job?.status === 'done' || job?.status === 'error' || job?.status === 'cancelled',
-      preview: hasResult,
-      download: hasResult && files.length > 0,
+      preview: resultReady,
+      download: resultReady && files.length > 0,
     }),
-    [job, hasResult, files.length],
+    [job, resultReady, files.length],
   )
 
-  const stepEnabled = (k: ViewName) => (k === 'input' ? true : !!job && (k !== 'preview' || hasResult))
+  const stepEnabled = (k: ViewName) =>
+    k === 'input' ? true : !!job && (k !== 'preview' || resultReady)
 
   return (
     <div className="app-shell">

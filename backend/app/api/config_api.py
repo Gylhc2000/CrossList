@@ -122,10 +122,13 @@ async def test_connection(body: TestBody):
         llm_api_key=body.apiKey if body.apiKey is not None else cur.llm_api_key,
         llm_text_model=body.textModel or cur.llm_text_model,
     )
+    tmp_client = LlmClient(tmp)
     try:
-        result = await LlmClient(tmp).ping()
+        result = await tmp_client.ping()
         return {"ok": True, **result}
     except LlmError as e:
         return {"ok": False, "error": str(e)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        await tmp_client.aclose()
