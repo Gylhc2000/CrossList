@@ -19,16 +19,24 @@ WorkingDirectory=/opt/crosslist/backend
 # 任务状态（JobManager）与 SSE 订阅者都存在【进程内存】里。
 # 开多 worker 后：任务在 worker A 创建，请求被负载到 worker B 就查不到 → 404 / 进度页空白。
 # 需要更高并发请改造成 Redis 等外部状态存储，而不是加 worker。
+# ⚠️ --forwarded-allow-ips 必须与 .env 的 TRUSTED_PROXIES 一致，且【不要写 *】：
+# 写 * 等于相信任何来源转来的 X-Forwarded-For，攻击者可以每次换一个伪造值，
+# 让登录限速（按 来源IP+用户名 计数）彻底失效，审计日志里的 ip 也会变成假的。
+# 同机 nginx 就是 127.0.0.1；反代在别的机器/容器就填那台机器的地址。
 ExecStart=/opt/crosslist/backend/.venv/bin/uvicorn app.main:app \
     --host 127.0.0.1 \
     --port 8000 \
     --workers 1 \
     --proxy-headers \
-    --forwarded-allow-ips='*'
+    --forwarded-allow-ips=127.0.0.1
 
 # 配置来源是 backend/.env（pydantic-settings 自动读取），不需要 EnvironmentFile。
-# 但前端「⚙ 模型配置」保存时是直接改写 .env 文件的，
-# 所以 crosslist 这个账号必须对该文件有写权限，否则保存报 500。
+# 服务账号需要对工作目录有写权限：
+#   backend/.env            —— 仅在 ALLOW_RUNTIME_CONFIG=true 时才会被改写
+#   backend/data/*.db*      —— SQLite（账号 / 会话 / 任务历史），WAL 模式需要写 -wal/-shm
+#   backend/output/         —— 任务产物与打包临时文件
+# 例：sudo install -d -o crosslist -g crosslist /opt/crosslist/backend/{data,output}
+#     sudo chmod 600 /opt/crosslist/backend/.env && sudo chown crosslist /opt/crosslist/backend/.env
 Environment=PYTHONUNBUFFERED=1
 
 Restart=always
