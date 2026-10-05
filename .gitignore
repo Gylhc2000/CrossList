@@ -2,7 +2,9 @@
 # 白名单模式：只纳入「可运行项目」所需源码
 #   backend/  → FastAPI + LangGraph 后端
 #   frontend/ → Next.js 14 + TypeScript 前端
-#   其余目录、产物、密钥、缓存一律不入库
+#   deploy/   → 部署模板（只放模板，不放真实环境文件）
+#   其余目录、产物、密钥、缓存、二进制一律不入库
+# 规则顺序：gitignore「后出现者优先」，所以反选 (!) 一律写在末尾
 # ============================================================
 
 # ---- 默认忽略根目录下的一切 ----
@@ -16,47 +18,100 @@
 !/deploy/
 
 # ============================================================
-# 以下为反选排除：gitignore 规则「后出现者优先」
+# 一、凭据：任何形式的密钥文件都不入库
 # ============================================================
-
-# ---- 密钥：绝不入库 ----
-backend/.env
-backend/.env.local
 .env
-.env.local
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+deploy/*.env
+deploy/.env*
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+id_rsa
+id_rsa.*
+*.asc
 
-# ---- Python 缓存与虚拟环境 ----
+# npm 的 _authToken 与 registry 凭据常写在这里；项目不用私有源，直接排掉
+.npmrc
+.netrc
+
+# ============================================================
+# 二、运行期数据：账号表、会话、口令散列、产物
+# ============================================================
+backend/data/
+backend/data*/
+backend/output/
+backend/_i2i_out/
+backend/*.json
+backend/*.sqlite
+backend/*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+
+# ============================================================
+# 三、依赖、缓存与构建产物
+# ============================================================
 __pycache__/
 *.py[cod]
 .venv/
 venv/
+env/
+.python-version
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+.next/
+.next_bak*/
+out/
+tsconfig.tsbuildinfo
+*.tsbuildinfo
 
-# ---- 后端运行产物 ----
-backend/output/
-backend/_i2i_out/
-backend/*.json
+# ============================================================
+# 四、二进制与媒体：别把录屏/截图/压缩包塞进仓库
+# ============================================================
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+*.mp4
+*.mov
+*.webm
+*.avi
 
-# ---- 后端根目录下的临时文件 ----
-# 只保留 _*.py 开发/测试脚本，其余 _* （生成的对比图、日志、临时 jobId 等）一律忽略
-backend/_*
-!backend/_*.py
-
-# ---- 前端依赖与构建产物 ----
-frontend/node_modules/
-frontend/.next/
-frontend/.next_bak*/
-frontend/out/
-frontend/tsconfig.tsbuildinfo
-frontend/_nextdev.log
-
-# ---- 一次性脚本（效果已固化进源码）----
-frontend/_patch_failed_score.py
-
-# ---- deploy/ 只放模板，真实环境文件禁止入库 ----
-deploy/*.env
-deploy/.env*
-
-# ---- 杂项 ----
+# ============================================================
+# 五、编辑器、系统与临时文件
+# ============================================================
+.idea/
+.vscode/
+.qoder/
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+*.rej
+*.tmp
 *.log
 .DS_Store
 Thumbs.db
+
+# ============================================================
+# 六、后端根目录下的临时脚本与产物
+#    只保留 _*.py 开发/探针脚本（README 已说明它们不参与 pytest）
+# ============================================================
+backend/_*
+!backend/_*.py
+
+# ---- 一次性脚本（效果已固化进源码）----
+frontend/_patch_failed_score.py
