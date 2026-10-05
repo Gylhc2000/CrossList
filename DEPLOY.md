@@ -110,6 +110,15 @@ cd /opt/crosslist/backend
 sudo -u crosslist python3 -m venv .venv
 sudo -u crosslist .venv/bin/pip install -U pip
 sudo -u crosslist .venv/bin/pip install -r requirements.txt
+# requirements.txt 只写版本下限。发布前在**这台机器上**冻结一份锁定清单入库，
+# 之后所有环境与 CI 都装它，避免"昨天还能跑"：
+#   .venv/bin/pip freeze > requirements.lock     然后改用 -r requirements.lock
+
+# 部署前自检（不需要 Key，30 秒内跑完）
+sudo -u crosslist .venv/bin/pip install -r requirements-dev.txt
+sudo -u crosslist .venv/bin/python -m pytest
+# 覆盖：规则计量、模板列与数据行对齐、SKU 与图片包命名、口令散列、
+# 登录限速（含伪造 X-Forwarded-For 绕不开锁定）、错误脱敏、鉴权接口往返
 
 # 生成配置文件（模板在 deploy/ 下，已入库且不含真实密钥）
 sudo -u crosslist cp /opt/crosslist/deploy/backend.env.production.example .env
@@ -267,13 +276,29 @@ sudo systemctl restart crosslist-frontend
 
 ---
 
-## 10. 本项目特有的坑（重要）
+## 10. 上线前必查的安全项
 
-1. **必须单 worker**：JobManager 是内存态，多 worker → 任务查询 404。
-2. **后端重启后老任务必然 404**：任务记录只在进程内存，属预期行为，不是 bug。
+服务一旦公网可达，扫描器会在几小时内找到它。下面每条都是发布前必须确认的：
+
+1. **`INVITE_CODE` 必须设，`ALLOW_OPEN_SIGNUP` 保持 false**。模型 Key 是全站共享的一把，开放注册等于任何人都能注册后用你的额度批量生成（一次任务 ≈ 13 次对话 + 9 次图像调用）。有邀请码你才握有发放权。生成一个：`openssl rand -hex 16`。
+2. **`COOKIE_SECURE=true`**（HTTPS 下）。设 false 时启动日志会告警；会话 Cookie 没有 Secure 位 = 同网段可嗅探。
+3. **`ALLOW_RUNTIME_CONFIG` 保持 false**。开着时 `POST /api/test` 会按请求里的 `baseUrl` 发真实请求，且 `apiKey` 缺省会带上服务端真实 Key —— 一次带回显的 SSRF + 密钥外泄。现在它另外还要求管理员身份，但默认关才对。
+4. **`BACKEND_HOST` 保持 `127.0.0.1`**，公网入口只留 nginx 的 80/443。下文方案 B 那种"放行 8000 直连后端"的写法在没有鉴权层的暴露面上更宽，慎用。
+5. **`ADMIN_USERNAMES` 填你自己的用户名**。空库时第一个注册者会自动成为管理员，但这个隐式规则可能被"先注册的评委"撞上。
+6. **文件权限**：`backend/.env` 设 `chmod 600`；`data/`（SQLite）与 `output/` 归服务账号所有。
+7. **`TRUSTED_PROXIES` 只填 nginx 的 IP**（默认 `127.0.0.1,::1`）。登录限速按 `(来源IP, 用户名)` 计；来源 IP 现在会取 `X-Forwarded-For`，但**仅当直连对端在这个名单里**，否则忽略头、用真实对端地址——这样隔着 nginx 仍能区分不同机器，而直连后端的攻击者也无法靠伪造 XFF 绕开锁定。填 `*` 启动日志会告警，等于把 IP 判定权交给任意请求方。
+8. **uvicorn 的 `--forwarded-allow-ips` 要和 `TRUSTED_PROXIES` 一致**。`deploy/crosslist-backend.service` 已写成 `127.0.0.1`；改成 `'*'` 会让 `request.client.host` 直接采信伪造头，绕过上一条。
+9. **改口令只留当前会话**。`POST /api/me/password` 会吊销该账号的其他所有会话，Cookie 被复制走的场景下这是唯一的止损入口。
+
+---
+
+## 11. 本项目特有的坑（重要）
+
+1. **必须单 worker**：JobManager 是内存态，多 worker → 运行中任务查询 404。账号/会话/历史已在 SQLite 里，但**执行中的任务状态与 SSE 订阅仍在进程内存**，所以 worker 只能 1。
+2. **后端重启不再丢历史**：账号、生成记录与已完成任务的完整结果都存在 SQLite，重启后登录回来仍能看到并下载（产物文件另有 24h TTL，过期条目会标"产物已过期"）。**运行中的任务会中断**，并在下次启动时被统一改写成"服务重启导致任务中断"——历史列表里不会留下永远"运行中"的假记录。
 3. **日志里出现旧配置**：先看 `/api/health` 的 `uptime_s`。若 uptime 早于你的修改时间，说明有**老进程仍在服务**（端口被旧实例占着、新实例绑定失败但假装成功了）。用 `netstat -ano | grep :8000`（Windows）或 `ss -lntp | grep 8000`（Linux）列出所有 PID 逐个清掉。
 4. **`.env` 改了要重启**：`get_settings()` 是 `@lru_cache`，进程内只读一次；`--reload` 也不监控 `.env`。
 5. **产物会吃满磁盘**：每次任务在 `backend/output/<jobId>/` 落图。内置清理任务默认 24 小时 TTL、30 分钟扫一轮，通过 `CLEANUP_TTL_HOURS` / `CLEANUP_INTERVAL_MINUTES` 调整（设 0 禁用）。磁盘紧张就把 `OUTPUT_DIR` 挂到数据盘。
-6. **服务器要能出网**：生成依赖调用模型网关 `token-plan.cn-beijing.maas.aliyuncs.com`。若服务器在无 NAT 的内网或安全组封了出方向，任务会直接失败在第一步。
+6. **服务器要能出网**：生成依赖调用你在 `.env` 的 `LLM_BASE_URL` 里配的模型网关（百炼兼容端点；若用的是工作空间专属域名，别写进本文档，只写进 `.env`）。若服务器在无 NAT 的内网或安全组封了出方向，任务会直接失败在第一步。
 7. **构建产物属主**：不要用 root 执行过 `npm run build` 再切 crosslist 去跑，会出现 `.next` 权限错误。全程统一用 `sudo -u crosslist`。
 8. **上 HTTPS（可选）**：有了域名后 `sudo apt install certbot python3-certbot-nginx && sudo certbot --nginx -d your.domain`，certbot 会自动改写上面的 nginx 配置。
