@@ -1,17 +1,20 @@
-"""元信息接口：模型清单 / 市场 / 平台规则 / Agent 图结构"""
+"""元信息接口：模型清单 / 市场 / 平台规则 / Agent 图结构
+
+需要登录：响应里带模型服务地址与全量规则，未鉴权公开等于给外部一张说明书。
+"""
 from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Request
 
 from app.agent.emitter import STEPS
 from app.agent.graph import graph_mermaid
+from app.core.auth import User, require_user
 from app.core.config import (
     AUDIO_MODELS,
     IMAGE_MODELS,
     TEXT_MODELS,
-    Settings,
     get_settings,
 )
 from app.rules.platforms import MARKETS, PLATFORMS
@@ -20,10 +23,10 @@ router = APIRouter(prefix="/api", tags=["meta"])
 
 
 @router.get("/meta")
-async def meta():
-    s: Settings = get_settings()
+async def meta(request: Request, user: User = Depends(require_user)):
     return {
-        "baseUrl": s.llm_base_url,
+        # 不返回 baseUrl：模型网关地址属于实现细节（错误文案里都刻意隐去它），
+        # 而前端读的是 /api/config 里那份带掩码的配置
         "textModels": TEXT_MODELS,
         "imageModels": IMAGE_MODELS,
         "audioModels": AUDIO_MODELS,
@@ -36,10 +39,17 @@ async def meta():
             {
                 "key": p.key, "name": p.name, "imageSize": p.image_size,
                 "defaultMarket": p.default_market, "fileExt": p.file_ext,
+                # 该平台真实有站点的市场：前端据此禁用勾选项，
+                # 否则用户能勾出「Amazon × 韩国」这种根本不存在的组合
+                "markets": list(p.markets),
                 "rules": {
                     "titleMax": p.rules.title_max, "bulletMax": p.rules.bullet_max,
                     "bulletCount": p.rules.bullet_count, "keywordMax": p.rules.keyword_max,
+                    "keywordMaxBytes": p.rules.keyword_max_bytes,
                     "descMax": p.rules.desc_max, "mainImage": p.rules.main_image,
+                    # 规则数值的核对时间：平台会改（Amazon 标题 200→75），
+                    # 没有这个标记就无法区分"平台如此规定"和"我们三年没看过它"
+                    "asof": p.rules.asof,
                 },
             }
             for p in PLATFORMS.values()

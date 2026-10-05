@@ -12,7 +12,7 @@ import json
 from app.agent.emitter import S_CHECK
 from app.core.llm import LlmClient
 from app.rules.platforms import (
-    MARKET_BY_LANG,
+    MARKET_BY_KEY,
     PLATFORMS,
     Issue,
     check_text,
@@ -115,7 +115,9 @@ async def validate_node(state: dict) -> dict:
     async def run(u: dict):
         key, pk, mk = u["key"], u["pk"], u["market"]
         p = PLATFORMS.get(pk)
-        market = MARKET_BY_LANG.get(u["lang_code"])
+        # 必须按市场键反查：按语言反查在「同一语言挂多个市场」时会串味
+        # （如葡语的巴西与葡萄牙共用 pt），评出的市场标签就是错的
+        market = MARKET_BY_KEY.get(mk)
         if not p or not market:
             return
         listing = listings.get(key) or {}
@@ -168,7 +170,10 @@ async def validate_node(state: dict) -> dict:
 
         # 评分模型回报的「编造卖点」清单：升级为 error，让它进入 fix 闭环自动重写，
         # 而不是只扣分、带着虚假卖点直接导出（虚假卖点 = 退货/差评/平台处罚风险）。
-        fab = quality.pop("issues", None)
+        # 这里用 get 而不是 pop：修正轮会复用上一轮的 quality 对象，pop 会把清单一次性
+        # 抽走，下一轮就再也拼不回这条 error —— 若那一轮 fix 恰好失败，编造卖点会
+        # 直接以「合规」姿态导出，且质量报告里查不到痕迹。
+        fab = quality.get("issues")
         if isinstance(fab, list):
             for f in fab[:5]:
                 if not isinstance(f, dict):

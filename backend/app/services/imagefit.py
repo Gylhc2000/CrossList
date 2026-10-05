@@ -53,3 +53,29 @@ def fit_image_bytes(data: bytes, target_px: int) -> bytes | None:
         return buf.getvalue()
     except Exception:
         return None
+
+
+def to_jpeg_bytes(data: bytes, quality: int = 90) -> bytes | None:
+    """任意图片 → JPEG。
+
+    Amazon 的免 URL 图片包（zip 按 `<SKU>.MAIN.jpg` 命名上传）走的是 .jpg 扩展名，
+    而我们内部统一产出 PNG，所以出包时转一次。顺带把体积压下来：2000px 白底 PNG
+    单张 3~6MB，同样画面 JPEG 约 0.5~1MB —— 9 张图的包从「上百 MB」变成能下载。
+
+    纯 CPU，调用方应放进线程池。失败返回 None，由调用方决定跳过还是回落。
+    """
+    try:
+        img = Image.open(BytesIO(data))
+        img.load()
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGBA")
+            bg = Image.new("RGB", img.size, (255, 255, 255))
+            bg.paste(img, mask=img.split()[-1])
+            img = bg
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        return buf.getvalue()
+    except Exception:
+        return None

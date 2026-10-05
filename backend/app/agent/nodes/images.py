@@ -298,7 +298,7 @@ async def image_node(state: dict) -> dict:
                 async with lock:
                     ip_blocked["n"] += 1
                 err = "疑似 IP/版权内容被图像风控拦截（已自动脱敏重试）"
-        storage.save(job_id, rel, data)
+        await storage.save(job_id, rel, data)
 
         async with lock:
             finished["n"] += 1

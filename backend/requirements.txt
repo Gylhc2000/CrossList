@@ -1,7 +1,20 @@
+# 版本策略：这里只写**下限**，不写死版本 —— 死锁的清单归 requirements.lock。
+#
+# 生产与演示环境一律装 requirements.lock（由开发机 `pip freeze` 生成）：
+# 这台机器装出来的版本和那台机器装出来的不是一套，LangGraph / FastAPI 这类
+# 还在 0.x 的库，一次小版本升级就足以改掉我们依赖的行为。
+#
+#   python -m pip install -r requirements.txt
+#   python -m pip freeze > requirements.lock      # 只有开发/发布机需要做一次
+#
+# 本地跑测试不需要 pandas/openpyxl/Pillow 之外的东西，见 requirements-dev.txt。
 fastapi>=0.115
 uvicorn[standard]>=0.30
 langgraph>=0.2
 langchain-core>=0.3
+# 代码按 pydantic v2 的语义写（BaseModel 字段默认值、model_validate）；
+# 它此前只是 pydantic-settings 的传递依赖，出问题时不会被任何清单提示
+pydantic>=2.9,<3
 openpyxl>=3.1
 Pillow>=10.0
 pandas>=2.2
@@ -9,4 +22,5 @@ httpx>=0.27
 python-dotenv>=1.0
 python-multipart>=0.0.9
 pydantic-settings>=2.5
+# 可选：仅在 OSS_ENABLED=true（产物镜像备份）时才需要
 oss2>=2.18

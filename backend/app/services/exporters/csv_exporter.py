@@ -19,15 +19,6 @@ def build_csv(columns: list[str], row: dict[str, object]) -> bytes:
     return buf.getvalue().encode("utf-8-sig")
 
 
-def build_csv_multi(columns: list[str], rows: list[dict[str, object]]) -> bytes:
-    """多 SKU / 多变体场景"""
-    records = [{c: _normalize(r.get(c, "")) for c in columns} for r in rows]
-    df = pd.DataFrame(records, columns=columns)
-    buf = io.StringIO()
-    df.to_csv(buf, index=False)
-    return buf.getvalue().encode("utf-8-sig")
-
-
 def _normalize(v: object) -> str:
     if v is None:
         return ""

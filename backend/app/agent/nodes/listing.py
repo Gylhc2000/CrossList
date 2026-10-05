@@ -10,7 +10,13 @@ import asyncio
 
 from app.agent.emitter import S_LISTING
 from app.core.llm import LlmClient, LlmError
-from app.rules.platforms import BANNED_WORDS, MARKET_BY_KEY, PLATFORMS
+from app.rules.platforms import (
+    BANNED_WORDS,
+    MARKET_BY_KEY,
+    PLATFORMS,
+    PlatformRules,
+    truncate_utf8,
+)
 
 _SYSTEM = (
     "你是服务 Amazon / AliExpress / Shopee 等跨境平台的资深 Listing 文案专家。"
@@ -103,8 +109,17 @@ def build_listing_prompt(card: dict, market, rules: PlatformRules, fix_hint: str
     bullet_floor = int(rules.bullet_max * BULLET_PROMPT_MIN_RATIO * d_bullet)
     bullet_ideal = int(rules.bullet_max * 0.45 * d_bullet)
     bullet_safe_max = int(rules.bullet_max * 0.85)
-    kw_budget = int(rules.keyword_max * 0.85)
     desc_ideal = int(min(int(rules.desc_max * 0.3), 700) * d_desc)
+    # 关键词的计量单位必须写清楚：按字节限长的平台上，韩语词表按"字符数"理解会系统性超限
+    if rules.keyword_max_bytes:
+        kw_limit = (
+            f"不超过 {int(rules.keyword_max_bytes * 0.85)} 字节"
+            f"（硬上限 {rules.keyword_max_bytes} **字节**，按 UTF-8 计 —— "
+            f"{market.language}一个字符约占 3 字节，折合约 {rules.keyword_max_bytes // 3} 个字符，"
+            f"请按此长度取舍词数，不要按英语的 250 字符来写）"
+        )
+    else:
+        kw_limit = f"不超过 {int(rules.keyword_max * 0.85)} 字符（硬上限 {rules.keyword_max} 字符）"
     banned = "、".join(f'"{w}"' for w in BANNED_WORDS)
 
     # 密度说明只在需要折算时出现（英语/德语不折算，说了反而多余）
@@ -122,7 +137,7 @@ def build_listing_prompt(card: dict, market, rules: PlatformRules, fix_hint: str
 【字符预算】
 - 标题：{title_budget} ~ {rules.title_max} 字符之间（硬上限 {rules.title_max}，宁可偏短也不要超限）
 - 卖点：恰好 {rules.bullet_count} 条，每条不少于 {bullet_floor} 字符，理想 {bullet_ideal} ~ {bullet_safe_max} 字符（硬上限 {rules.bullet_max}，不要贴着上限写）
-- 搜索关键词：不超过 {kw_budget} 字符（硬上限 {rules.keyword_max}）
+- 搜索关键词：{kw_limit}
 - 商品描述：不少于 {desc_ideal} 字符，2-4 段（平台硬上限 {rules.desc_max}）{density_note}
 【禁用词清单 · 以下词汇绝对禁止出现在任何位置（含大小写与词形变化）】
 {banned}
@@ -223,6 +238,9 @@ async def generate_one(
     search_terms = _truncate(
         str(data.get("search_terms") or data.get("keywords") or ""), rules.keyword_max
     )
+    if rules.keyword_max_bytes:
+        # 再过一道字节闸：字符数合规的韩语/日语关键词仍可能超平台的字节上限
+        search_terms = truncate_utf8(search_terms, rules.keyword_max_bytes)
     description = _truncate(str(data.get("description") or ""), rules.desc_max)
 
     return {

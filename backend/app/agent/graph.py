@@ -28,8 +28,6 @@ RECURSION_LIMIT = 20
 
 
 def route_after_validate(state: AgentState) -> str:
-    if state.get("cancelled"):
-        return END
     return "fix" if pending_fix_targets(state) else "export"
 
 
@@ -58,7 +56,7 @@ def build_graph():
     g.add_conditional_edges(
         "validate",
         route_after_validate,
-        {"fix": "fix", "export": "export", END: END},
+        {"fix": "fix", "export": "export"},
     )
     g.add_edge("fix", "validate")   # 修正后回到校验，形成闭环
     g.add_edge("export", END)

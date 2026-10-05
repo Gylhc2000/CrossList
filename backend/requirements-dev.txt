@@ -1,0 +1,3 @@
+# 测试依赖（可选）。运行前请先装 requirements.txt
+#   cd backend && python -m pytest -q
+pytest>=8.0

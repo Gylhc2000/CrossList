@@ -54,7 +54,8 @@ MARKETS: list[Market] = [
 ]
 
 MARKET_BY_KEY = {m.key: m for m in MARKETS}
-MARKET_BY_LANG = {m.lang_code: m for m in MARKETS}
+# 不要建 lang_code -> Market 的反查表：同一语言可以挂多个市场（葡语的巴西/葡萄牙、
+# 英语的美国/英国），那种表会静默覆盖，校验与导出取到的市场标签就成了别的站点。
 
 
 # ---------------- 禁用词 ----------------
@@ -62,7 +63,9 @@ BANNED_WORDS: list[str] = [
     "cure", "treatment", "medical", "heal", "therapy", "anti-bacterial",
     "100% safe", "best", "cheapest", "#1", "no.1", "free gift",
     "guaranteed", "fda approved",
-    "치료", " 의료", "완치", "최고",
+    # 非 ASCII 词条走子串匹配，多一个前导空格就永远匹配不上句首或标点后的词
+    # （"의료기기 사용" 开头就没有空格）
+    "치료", "의료", "완치", "최고",
     "curar", "médico", "tratamiento", "el mejor",
 ]
 
@@ -76,6 +79,39 @@ COMPETITOR_WORDS: list[str] = [
 ]
 
 
+# ---------------- 长度计量 ----------------
+def utf8_len(s: str) -> int:
+    """UTF-8 字节数。
+
+    部分平台的部分字段按**字节**而非字符限长（已知：Amazon 后台关键词 250 字节）。
+    韩语/日语一个字符占 3 字节，按字符校验会静默漏判：84 个韩文字符 = 252 字节，
+    代码判"合规"，平台直接拒。凡声明了 keyword_max_bytes 的规则一律用本函数计量。
+    """
+    return len((s or "").encode("utf-8"))
+
+
+def truncate_utf8(s: str, max_bytes: int) -> str:
+    """按 UTF-8 字节上限截断，尽量在空格边界断开（关键词是空格分隔的词表）。"""
+    s = (s or "").strip()
+    if utf8_len(s) <= max_bytes:
+        return s
+    out = ""
+    for word in s.split(" "):
+        cand = f"{out} {word}".strip()
+        if utf8_len(cand) > max_bytes:
+            break
+        out = cand
+    if out:
+        return out
+    # 单个词就超限：逐字退到字节上限内
+    cut = ""
+    for ch in s:
+        if utf8_len(cut + ch) > max_bytes:
+            break
+        cut += ch
+    return cut
+
+
 # ---------------- 平台 ----------------
 @dataclass(frozen=True)
 class PlatformRules:
@@ -85,6 +121,11 @@ class PlatformRules:
     keyword_max: int
     desc_max: int
     main_image: str
+    # 关键词字段的计量口径：非 None 表示平台按 UTF-8 字节限长（此时 keyword_max 按字节解释）
+    keyword_max_bytes: int | None = None
+    # 这些数字是某个时点抓的快照，平台会改（Amazon 标题上限 2026-07-27 就从 200 降到 75）。
+    # 无此标记时无法判断一条规则是"平台如此规定"还是"我们三年没看过它"。
+    asof: str = ""
 
 
 @dataclass(frozen=True)
@@ -96,46 +137,71 @@ class Platform:
     image_px: int
     rules: PlatformRules
     file_ext: str  # xlsx | csv
+    # 该平台真实运营消费者站点的市场（限上面 MARKETS 里有的键）。
+    # 不填这层就会生成出"根本不存在的组合"：市场键绑死语言
+    # （kr→韩语），勾了 Amazon×韩国就等于给一个不存在的站点写韩语 Listing。
+    # ⚠️ 这份清单需要拿平台官方站点列表复核，尤其 TikTok 的欧洲站点在 2025-2026 仍在扩张。
+    markets: tuple[str, ...] = ()
 
 
 PLATFORMS: dict[str, Platform] = {
     "amazon": Platform(
         key="amazon", name="Amazon", default_market="us",
         image_size="2000×2000px", image_px=2000, file_ext="xlsx",
+        markets=("us", "de", "jp", "es", "br"),
         rules=PlatformRules(
-            title_max=200, bullet_max=500, bullet_count=5,
-            keyword_max=250, desc_max=2000,
+            # 2026-07-27 起 item_name 上限由 200 降为 75 字符（媒体类除外），
+            # 且超限不是拒单、而是亚马逊用 AI 自动重写标题 —— 按 200 生成等于把
+            # 我们写好的标题交给对方的模型改写。来源为公开卖家资讯，未逐站点核实。
+            title_max=75, bullet_max=500, bullet_count=5,
+            keyword_max=250, keyword_max_bytes=250,   # generic keywords 限 250 **字节**
+            desc_max=2000,
             main_image="纯白背景（RGB 255,255,255），商品占比≥85%，无水印/文字/边框",
+            asof="2026-10-01 核对标题/关键词上限；其余为早期值，待复核",
         ),
     ),
     "aliexpress": Platform(
         key="aliexpress", name="AliExpress", default_market="kr",
         image_size="800×800px", image_px=800, file_ext="csv",
+        markets=("us", "kr", "br", "jp", "de", "es"),
         rules=PlatformRules(
             title_max=128, bullet_max=300, bullet_count=5,
             keyword_max=200, desc_max=4000,
             main_image="白底或浅色背景，建议 800×800 以上，主图不得含促销文字",
+            # 开放平台文档称 subject 须为 ASCII（1-128），若为真则与本平台的韩语
+            # 默认市场直接冲突；该说法未在批量模板路径上核实，标 UNCERTAIN，留此备忘。
+            asof="2026-10-01 标注 ASCII 标题疑点；上限数值待复核",
         ),
     ),
     "shopee": Platform(
         key="shopee", name="Shopee", default_market="br",
         image_size="1024×1024px", image_px=1024, file_ext="csv",
+        markets=("br",),   # 东南亚/台/拉美，无美国、韩国、日本、德国、西班牙站点
         rules=PlatformRules(
             title_max=120, bullet_max=200, bullet_count=5,
             keyword_max=150, desc_max=3000,
             main_image="正方形主图，最多 9 张，首图建议白底，禁止联系方式与站外信息",
+            asof="待复核（数值自项目初期未更新）",
         ),
     ),
     "tiktok": Platform(
         key="tiktok", name="TikTok Shop", default_market="us",
         image_size="1080×1080px", image_px=1080, file_ext="csv",
+        markets=("us", "br", "jp", "de", "es"),   # 无韩国站点
         rules=PlatformRules(
             title_max=150, bullet_max=250, bullet_count=4,
             keyword_max=150, desc_max=2000,
             main_image="1:1 主图，禁止夸张绝对化用语与站外引流信息",
+            asof="待复核（数值自项目初期未更新）",
         ),
     ),
 }
+
+
+def market_supported(pk: str, mk: str) -> bool:
+    """该平台是否在此市场有站点。markets 为空视为不限制（新平台还没填）。"""
+    p = PLATFORMS.get(pk)
+    return True if not p or not p.markets else mk in p.markets
 
 
 # ---------------- 语言纯度校验 ----------------
@@ -296,6 +362,14 @@ def check_text(listing: dict, rules: PlatformRules,
     kw = str(listing.get("search_terms") or listing.get("keywords") or "")
     if not kw:
         issues.append(Issue("warn", "keywords", "未提供搜索关键词", "补充 5-10 个高相关关键词"))
+    elif rules.keyword_max_bytes:
+        # 按字节判：韩语 84 字符 = 252 字节，按字符校验会静默放过、平台直接拒
+        n = utf8_len(kw)
+        if n > rules.keyword_max_bytes:
+            issues.append(Issue("error", "keywords",
+                                f"搜索词 {n} 字节（{len(kw)} 字符），超出平台上限 "
+                                f"{rules.keyword_max_bytes} 字节",
+                                "按字节删减关键词：非拉丁文字一个字符通常占 2~3 字节"))
     elif len(kw) > rules.keyword_max:
         issues.append(Issue("error", "keywords",
                             f"搜索词 {len(kw)} 字符，超出 {rules.keyword_max}",
@@ -362,27 +436,32 @@ AMAZON_COLUMNS: list[str] = [
 ]
 
 AMAZON_FIELD_NOTES: dict[str, str] = {
-    "feed_product_type": "商品类型（平台枚举值）",
+    "feed_product_type": "商品类型（平台枚举值，决定必填列集合）· 需卖家填",
     "item_sku": "卖家自定义SKU，唯一",
     "brand_name": "品牌名",
     "item_name": "商品标题（Listing Title）",
     "product_description": "商品描述",
     "bullet_point1": "卖点1", "bullet_point2": "卖点2", "bullet_point3": "卖点3",
     "bullet_point4": "卖点4", "bullet_point5": "卖点5",
-    "generic_keywords": "搜索关键词，空格分隔",
+    "generic_keywords": "搜索关键词，空格分隔，上限按 UTF-8 字节计",
     "main_image_url": "主图路径（白底）",
     "other_image_url1": "辅图1", "other_image_url2": "辅图2", "other_image_url3": "辅图3",
     "other_image_url4": "辅图4", "other_image_url5": "辅图5",
-    "item_type": "商品类型关键词", "color_name": "颜色", "size_name": "尺寸",
+    "item_type": "商品类型关键词", "color_name": "颜色",
+    "size_name": "尺寸 · 需卖家填（平台尺码须落在类目允许值内）",
     "part_number": "型号", "manufacturer": "制造商",
-    "product_id": "商品编码（UPC/EAN/GTIN）", "product_id_type": "编码类型",
+    "product_id": "商品编码（UPC/EAN/GTIN）· 需卖家填，无法生成",
+    "product_id_type": "编码类型",
     "condition_type": "商品状况（New）", "standard_price": "售价", "currency": "币种",
-    "quantity": "库存数量", "fulfillment_latency": "发货时效（天）",
+    "quantity": "库存数量 · 需卖家填", "fulfillment_latency": "发货时效（天）· 需卖家填",
     "package_length": "包装长", "package_width": "包装宽", "package_height": "包装高",
     "package_weight": "包装重量", "package_length_unit": "长度单位",
-    "package_weight_unit": "重量单位", "country_of_origin": "原产国",
-    "warranty_description": "保修说明", "is_adult_product": "是否成人用品",
-    "target_gender": "目标性别", "recommended_browse_nodes": "推荐类目节点",
+    "package_weight_unit": "重量单位",
+    "country_of_origin": "原产国 · 需卖家填（影响清关/关税）",
+    "warranty_description": "保修说明 · 需卖家填（对消费者的法律承诺）",
+    "is_adult_product": "是否成人用品",
+    "target_gender": "目标性别 · 需卖家填",
+    "recommended_browse_nodes": "推荐类目节点 · 需卖家填（平台数字 ID）",
 }
 
 ALIEXPRESS_COLUMNS: list[str] = [

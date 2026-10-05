@@ -43,7 +43,6 @@ class AgentState(TypedDict, total=False):
     warnings: list[str]
     logs: list[dict[str, Any]]
     error: str | None
-    cancelled: bool
 
 
 def new_state(
@@ -73,5 +72,4 @@ def new_state(
         warnings=[],
         logs=[],
         error=None,
-        cancelled=False,
     )
