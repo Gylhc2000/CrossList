@@ -109,6 +109,7 @@ export default function PreviewView({
   const l = p.listing ?? { title: '', bullet_points: [], description: '', search_terms: '' }
   const title = l.title ?? ''
   const bullets = l.bullet_points ?? []
+  const manual = p.manual_fields ?? []
   const scored = !p.quality?.failed
   const score = Number(p.quality?.score ?? 0)
   const brand = brandOf(p.pk ?? p.key)
@@ -325,6 +326,42 @@ export default function PreviewView({
               </div>
             </div>
           </div>
+
+          {/* 待补清单：模板里刻意留空的列。不在这里公示，空单元格只会被当成生成缺陷 */}
+          {manual.length > 0 && (
+            <div className="section-card">
+              <div className="section-head">
+                <span className="section-idx">
+                  <Icon name="fileText" size={13} />
+                </span>
+                <span className="section-title">上传前必填 · {manual.length} 项</span>
+                <span className="section-desc">工具不代填</span>
+              </div>
+              <div className="section-body">
+                <div className="notice multi" style={{ marginBottom: 12 }}>
+                  <Icon name="info" size={14} />
+                  <div>
+                    下面这些值<b>只有卖家或平台才有</b>（库存、保修、类目 ID、GTIN 条码、图片地址），
+                    我们留空而不是猜一个：猜值不会让导入报错，只会把假数据静默写进店铺。
+                    逐条对照已写进包内<b>《上架对照表》</b>，补齐后再上传。
+                  </div>
+                </div>
+                <div className="check-list">
+                  {manual.map((m) => (
+                    <div className="check-item warn" key={m.col}>
+                      <span className="check-ic">
+                        <Icon name="alert" size={13} strokeWidth={2.4} />
+                      </span>
+                      <span>
+                        <code className="mf-col">{m.col}</code>
+                        {m.why}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ---------- 右：图片 + 知识卡片 ---------- */}
@@ -421,7 +458,7 @@ export default function PreviewView({
                 <Empty
                   icon="image"
                   title="本次未生成图片"
-                  desc="在输入页关闭了图像生成，仅产出 Listing 与批量上传模板"
+                  desc="在输入页关闭了图像生成，仅产出 Listing、批量上传模板与上架对照表"
                 />
               )}
             </div>

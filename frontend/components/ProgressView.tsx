@@ -96,7 +96,7 @@ export default function ProgressView({ job, elapsed, onCancel, onViewResult }: P
           <button
             className="btn btn-danger btn-sm"
             onClick={onCancel}
-            disabled={job?.status !== 'running'}
+            disabled={job?.status !== 'running' && job?.status !== 'queued'}
           >
             <Icon name="x" size={13} />
             取消任务

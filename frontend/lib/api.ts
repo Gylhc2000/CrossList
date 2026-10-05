@@ -1,8 +1,11 @@
 import type {
   AppConfig,
+  AuthStatus,
+  HistoryJob,
   JobSnapshot,
   MetaResponse,
   PlatformFiles,
+  UserMe,
 } from './types'
 
 const jsonHeaders = { 'Content-Type': 'application/json' }
@@ -17,10 +20,17 @@ export class ApiError extends Error {
   }
 }
 
+/** 会话失效时的回调：由 page.tsx 注册，任何请求拿到 401 都统一退回登录页 */
+let onUnauthorized: (() => void) | null = null
+export function setUnauthorizedHandler(fn: (() => void) | null) {
+  onUnauthorized = fn
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
-    res = await fetch(path, init)
+    // 会话在 HttpOnly Cookie 里，JS 读不到也偷不走，但每个请求必须带上
+    res = await fetch(path, { credentials: 'include', ...init })
   } catch (e) {
     // fetch 本身失败（断网 / 后端未启动）：status=0，供调用方与 404 区分
     throw new ApiError((e as Error)?.message || '网络请求失败', 0)
@@ -37,6 +47,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       (data && typeof data === 'object' && 'detail' in data
         ? String((data as { detail: unknown }).detail)
         : null) || text || `请求失败（${res.status}）`
+    // 会话过期往往是"静默失败"：进度页还在转圈，但每个请求都 401。
+    // 在这里统一收口，而不是让每个调用点各自判断一次
+    if (res.status === 401 && path !== '/api/me' && !path.startsWith('/api/auth/')) {
+      onUnauthorized?.()
+    }
     throw new ApiError(msg, res.status)
   }
   return data as T
@@ -44,6 +59,39 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   meta: () => request<MetaResponse>('/api/meta'),
+
+  authStatus: () => request<AuthStatus>('/api/auth/status'),
+
+  register: (body: { username: string; password: string; invite?: string }) =>
+    request<{ user: UserMe }>('/api/auth/register', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify(body),
+    }),
+
+  login: (body: { username: string; password: string }) =>
+    request<{ user: UserMe }>('/api/auth/login', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify(body),
+    }),
+
+  logout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+
+  changePassword: (body: { currentPassword: string; newPassword: string }) =>
+    request<{ ok: boolean; revokedSessions: number }>('/api/me/password', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify(body),
+    }),
+
+  me: () => request<UserMe>('/api/me'),
+
+  myJobs: (limit = 50, offset = 0) =>
+    request<{ jobs: HistoryJob[] }>(`/api/me/jobs?limit=${limit}&offset=${offset}`),
+
+  deleteJob: (jobId: string) =>
+    request<{ ok: boolean }>(`/api/me/jobs/${jobId}`, { method: 'DELETE' }),
 
   getConfig: () => request<AppConfig>('/api/config'),
 
@@ -90,9 +138,6 @@ export const api = {
 
 export const downloadUrl = (jobId: string, scope = 'all') =>
   `/api/jobs/${jobId}/download?scope=${encodeURIComponent(scope)}`
-
-export const assetUrl = (jobId: string, path: string) =>
-  `/api/jobs/${jobId}/asset?p=${encodeURIComponent(path)}`
 
 export const streamUrl = (jobId: string) => `/api/jobs/${jobId}/events`
 

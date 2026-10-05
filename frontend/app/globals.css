@@ -356,6 +356,11 @@ a {
   background: var(--ok-50);
   color: var(--ok-600);
 }
+/* 任务失败/取消：进度这一步显示 ✗ 而不是绿勾 */
+.stp.bad .stp-idx {
+  background: var(--err-50);
+  color: var(--err-600);
+}
 .stp-sep {
   width: 10px;
   height: 1.5px;
@@ -737,6 +742,16 @@ a {
   border-color: var(--brand-500);
   box-shadow: 0 0 0 3.5px rgba(255, 107, 44, 0.13);
   background: #fff;
+}
+/* 校验未通过的输入框（如两次新口令不一致）：用 err 语义色，不与焦点态抢视觉 */
+.input.over,
+.textarea.over {
+  border-color: var(--err-500);
+}
+.input.over:focus,
+.textarea.over:focus {
+  border-color: var(--err-500);
+  box-shadow: 0 0 0 3.5px var(--err-100);
 }
 .textarea {
   min-height: 64px;
@@ -1375,6 +1390,13 @@ a {
   filter: none;
   opacity: 1;
 }
+/* 该平台在此市场无自营站点：不拦，但选中之后用虚线描边标出来（悬停有说明） */
+.mk-chip.nosite:not(.on) {
+  opacity: 0.22;
+}
+.mk-chip.nosite.on {
+  border-style: dashed;
+}
 .pm-count {
   font-size: 11px;
   font-weight: 650;
@@ -1930,6 +1952,17 @@ a {
 .check-ic {
   flex-shrink: 0;
   margin-top: 3px;   /* 12.5px × 1.6 行框 ≈ 20px，13px 图标居中偏移 */
+}
+/* 「上传前必填」里的模板列名：等宽小徽块，和后面的中文说明拉开视觉层级 */
+.mf-col {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: var(--r-xs);
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--warn-100);
+  color: var(--warn-600);
+  word-break: break-all;
 }
 
 /* ---------------- 18. Gallery & Lightbox ---------------- */
@@ -2780,6 +2813,311 @@ a.file-chip:hover {
   .metric-grid {
     grid-template-columns: repeat(2, 1fr);
   }
+}
+
+/* ---------------- 登录 / 注册 ---------------- */
+.auth-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px 56px;
+}
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--surface);
+  border: 1px solid var(--ink-200);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-lg);
+  padding: 26px 26px 20px;
+}
+.auth-head {
+  margin-bottom: 16px;
+}
+.auth-title {
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.2px;
+  color: var(--ink-900);
+}
+.auth-sub {
+  margin-top: 5px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-500);
+}
+.auth-switch {
+  display: flex;
+  margin-bottom: 18px;
+}
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+.pw-row {
+  position: relative;
+  display: flex;
+}
+.pw-row .input {
+  padding-right: 38px;
+}
+.pw-toggle {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 27px;
+  height: 27px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-400);
+  cursor: pointer;
+  border-radius: var(--r-xs);
+  display: grid;
+  place-items: center;
+  transition: color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.pw-toggle:hover {
+  color: var(--ink-700);
+  background: var(--surface-3);
+}
+.link-btn {
+  border: 0;
+  background: none;
+  padding: 0 2px;
+  font: inherit;
+  color: var(--brand-600);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.link-btn:hover {
+  color: var(--brand-500);
+}
+.auth-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ink-100);
+  font-size: 12.5px;
+  color: var(--ink-500);
+}
+.auth-foot svg {
+  flex-shrink: 0;
+}
+
+/* ---------------- 顶栏账号区 ---------------- */
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 5px 0 10px;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--r-full);
+  background: var(--surface);
+  font-size: 12.5px;
+  color: var(--ink-700);
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+}
+.user-chip:hover {
+  border-color: var(--brand-400);
+  box-shadow: var(--sh-xs);
+}
+.user-avatar {
+  width: 21px;
+  height: 21px;
+  border-radius: var(--r-full);
+  display: grid;
+  place-items: center;
+  font-size: 10.5px;
+  font-weight: 650;
+  color: #fff;
+  background: linear-gradient(135deg, var(--brand-500), var(--brand-600));
+  flex-shrink: 0;
+}
+.user-name {
+  max-width: 108px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 550;
+}
+.user-menu {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  min-width: 218px;
+  background: var(--surface);
+  border: 1px solid var(--ink-200);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-lg);
+  padding: 6px;
+  z-index: 40;
+}
+.um-head {
+  padding: 8px 10px 9px;
+  border-bottom: 1px solid var(--ink-100);
+  margin-bottom: 5px;
+}
+.um-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-900);
+  word-break: break-all;
+}
+.um-meta {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--ink-500);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.um-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-700);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.um-item:hover {
+  background: var(--surface-3);
+  color: var(--ink-900);
+}
+.um-item.danger:hover {
+  background: var(--err-50);
+  color: var(--err-600);
+}
+.um-sep {
+  height: 1px;
+  background: var(--ink-100);
+  margin: 5px 4px;
+}
+.header-actions {
+  position: relative;
+}
+.quota-meter {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.quota-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: var(--r-full);
+  background: var(--ink-100);
+  overflow: hidden;
+  min-width: 54px;
+}
+.quota-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-full);
+  background: var(--brand-500);
+  transition: width var(--dur-2) var(--ease);
+}
+.quota-bar.full > i {
+  background: var(--warn-500);
+}
+.cold-note {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 12px;
+  border: 1px dashed var(--ink-200);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-size: 12px;
+  color: var(--ink-500);
+  margin-bottom: 14px;
+}
+
+/* 历史抽屉里的多行条目：不改 .history-item（那里是单行版，别互相影响） */
+.hist-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  width: 100%;
+  text-align: left;
+  position: relative;
+}
+.hist-item .hi-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.hi-tags {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.hi-tag {
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: var(--r-full);
+  background: var(--surface-3);
+  color: var(--ink-600);
+  white-space: nowrap;
+}
+.hi-act {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.hi-x {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  color: var(--ink-300);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.hi-x:hover {
+  color: var(--err-500);
+  background: var(--err-50);
+}
+
+/* 产物已过期的条目：仍可看时间，但点不动也不该有可点反馈 */
+.history-item.off {
+  cursor: default;
+  opacity: 0.66;
+  background: var(--surface-2);
+}
+.history-item.off:hover {
+  border-color: var(--ink-200);
+  background: var(--surface-2);
+  transform: none;
+}
+.hist-item:disabled {
+  cursor: default;
+}
+.hist-item:focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
 }
 
 @media (prefers-reduced-motion: reduce) {

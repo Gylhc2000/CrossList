@@ -7,7 +7,7 @@ import type { JobSnapshot, PlatformFiles } from '@/lib/types'
 interface Props {
   job: JobSnapshot
   files: PlatformFiles[]
-  filesState: 'idle' | 'loading' | 'ready'
+  filesState: 'idle' | 'loading' | 'ready' | 'error'
   onReload: () => void
   onBackPreview: () => void
   onRestart: () => void
@@ -15,7 +15,7 @@ interface Props {
 }
 
 const typeIcon = (type: string) =>
-  type === 'images' ? ('image' as const) : type === 'template' ? ('sheet' as const) : type === 'report' ? ('fileText' as const) : ('file' as const)
+  type === 'images' ? ('image' as const) : type === 'report' ? ('fileText' as const) : type === 'archive' ? ('package' as const) : type === 'template' || type === 'worksheet' ? ('sheet' as const) : ('file' as const)
 
 export default function DownloadView({
   job,
@@ -39,6 +39,7 @@ export default function DownloadView({
   const imageTotal = rep?.image_total ?? 0
   const imageMasked = rep?.image_masked ?? 0
   const imageFailed = rep?.image_failed ?? 0
+  const manualTotal = rep?.manual_field_count ?? 0
 
   const totalSize = files.reduce(
     (sum, p) => sum + (p.files ?? []).reduce((s, f) => s + (f.size ?? 0), 0),
@@ -80,7 +81,10 @@ export default function DownloadView({
           </h1>
           <p className="page-sub">
             {job.result.knowledge_card?.product_name_zh ?? '商品'} · 共 {platforms.length}
-            份站点素材包，可直接导入对应卖家后台批量上传。
+            份站点素材包：文案可直接取用，图片已按平台尺寸适配。批量模板的列集合是整理出来的演示版，
+            {manualTotal
+              ? `正式上传前请按各平台《上架对照表》补齐 ${manualTotal} 项只有卖家/平台才有的字段。`
+              : '上传前请按各平台《上架对照表》逐项核对一遍。'}
           </p>
         </div>
         <div className="page-head-aside">
@@ -149,6 +153,16 @@ export default function DownloadView({
         </div>
         <div className="metric">
           <div className="metric-l">
+            <Icon name="fileText" size={12} />
+            上传前待补
+          </div>
+          <div className="metric-v">
+            {manualTotal}
+            <small>项</small>
+          </div>
+        </div>
+        <div className="metric">
+          <div className="metric-l">
             <Icon name="refresh" size={12} />
             自动修正
           </div>
@@ -165,6 +179,7 @@ export default function DownloadView({
           const list = files.find((f) => f.key === (p.pk ?? p.key))?.files ?? []
           const b = brandOf(p.pk ?? p.key)
           const size = list.reduce((s, f) => s + (f.size ?? 0), 0)
+          const manualN = p.manual_fields?.length ?? 0
           return (
             <div className="dl-card" key={p.key}>
               <span className="dl-logo" style={{ background: b.bg }}>
@@ -182,6 +197,7 @@ export default function DownloadView({
                 <div className="dl-sub">
                   {p.market_label} · 主图 {p.image_size} · {list.length || '—'} 个文件
                   {size ? ` · ${fmtSize(size)}` : ''}
+                  {manualN ? ` · ${manualN} 项待补` : ''}
                 </div>
                 <div className="dl-files">
                   {list.length ? (
@@ -192,15 +208,29 @@ export default function DownloadView({
                         <span className="sz">{fmtSize(f.size)}</span>
                       </span>
                     ))
-                  ) : filesState !== 'ready' ? (
+                  ) : filesState === 'error' ? (
+                    /* 请求失败 ≠ 产物已失效：说成后者会骗人重跑一次任务 */
+                    <span className="t-sm" style={{ color: 'var(--err-500)' }}>
+                      产物清单加载失败（服务未响应）·{' '}
+                      <a
+                        href="#"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          onReload()
+                        }}
+                      >
+                        重试
+                      </a>
+                    </span>
+                  ) : filesState === 'ready' ? (
+                    <span className="t-sm" style={{ color: 'var(--err-500)' }}>
+                      产物不可用
+                    </span>
+                  ) : (
                     <>
                       <span className="sk" style={{ height: 22, width: 120 }} />
                       <span className="sk" style={{ height: 22, width: 96 }} />
                     </>
-                  ) : (
-                    <span className="t-sm" style={{ color: 'var(--err-500)' }}>
-                      产物不可用
-                    </span>
                   )}
                 </div>
               </div>
@@ -357,7 +387,7 @@ export default function DownloadView({
                     </span>
                     <span className="kv-v">
                       <span className={`badge ${s.score >= 85 ? 'badge-ok' : s.score >= 70 ? 'badge-warn' : 'badge-err'}`}>
-                        {(s as { failed?: boolean }).failed ? '—' : `${s.score} 分`}
+                        {s.failed ? '—' : `${s.score} 分`}
                       </span>
                     </span>
                   </div>

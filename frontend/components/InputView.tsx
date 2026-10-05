@@ -23,7 +23,6 @@ interface Props {
   meta: MetaResponse | null
   starting: boolean
   onStart: (p: StartPayload) => void
-  onOpenConfig: () => void
 }
 
 const IMAGE_TOTAL = 9
@@ -81,7 +80,7 @@ function compressImage(file: File): Promise<string> {
   })
 }
 
-export default function InputView({ meta, starting, onStart, onOpenConfig }: Props) {
+export default function InputView({ meta, starting, onStart }: Props) {
   const [productName, setProductName] = useState('')
   const [category, setCategory] = useState('')
   const [description, setDescription] = useState('')
@@ -242,7 +241,7 @@ export default function InputView({ meta, starting, onStart, onOpenConfig }: Pro
         <div>
           <h1 className="page-title">新建上架任务</h1>
           <p className="page-sub">
-            填写一次商品信息，自动生成多平台合规 Listing、商品主图与可直接导入后台的批量上传模板。
+            填写一次商品信息，自动生成多平台合规 Listing、按平台尺寸适配的商品主图，以及批量上传模板与逐字段《上架对照表》。
           </p>
         </div>
       </div>
@@ -466,7 +465,12 @@ export default function InputView({ meta, starting, onStart, onOpenConfig }: Pro
                 accept="image/*"
                 multiple
                 hidden
-                onChange={(e) => handleFiles(e.target.files)}
+                onChange={(e) => {
+                  handleFiles(e.target.files)
+                  // 清空 value：否则删掉某张图后再选同一个文件，input 认为"值没变"，
+                  // onChange 不触发，图就再也加不回来了
+                  e.target.value = ''
+                }}
               />
 
               {images.length > 0 && (
@@ -591,20 +595,30 @@ export default function InputView({ meta, starting, onStart, onOpenConfig }: Pro
                           <span className="pm-name">{pl.name}</span>
                         </div>
                         <div className="pm-chips">
-                          {marketList.map((m) => {
-                            const on = chosen.includes(m.key)
-                            return (
-                              <button
-                                key={m.key}
-                                className={`mk-chip${on ? ' on' : ''}`}
-                                onClick={() => toggleUnitMarket(pl.key, m.key)}
-                                aria-pressed={on}
-                                title={`${pl.name} × ${m.label}（${m.language}）`}
-                              >
-                                {m.flag}
-                              </button>
-                            )
-                          })}
+                          {/* 市场由用户自选，不按平台站点清单过滤（那份清单只是公开资料整理，
+                              拦得太死会让 Shopee 这类平台几乎没得选）。
+                              平台确无该站点时只做视觉提示，仍然可点 */}
+                          {marketList
+                            .map((m) => {
+                              const on = chosen.includes(m.key)
+                              const allowed = pl.markets ?? []
+                              const noSite = allowed.length > 0 && !allowed.includes(m.key)
+                              return (
+                                <button
+                                  key={m.key}
+                                  className={`mk-chip${on ? ' on' : ''}${noSite ? ' nosite' : ''}`}
+                                  onClick={() => toggleUnitMarket(pl.key, m.key)}
+                                  aria-pressed={on}
+                                  title={
+                                    noSite
+                                      ? `${pl.name} × ${m.label}（${m.language}）：公开资料显示该平台在此市场无自营站点，产物仅作素材参考`
+                                      : `${pl.name} × ${m.label}（${m.language}）`
+                                  }
+                                >
+                                  {m.flag}
+                                </button>
+                              )
+                            })}
                         </div>
                         <span className={`pm-count${empty ? ' zero' : ''}`}>{empty ? '不产出' : chosen.length}</span>
                       </div>
