@@ -57,8 +57,6 @@ def _fallback_plan(params: dict) -> dict:
     units = _fallback_units(params)
     return {
         "units": units,
-        "image_plan": ["白底主图", "场景图", "卖点图1", "卖点图2", "尺寸图",
-                       "详情页-首图", "详情页-痛点", "详情页-卖点", "详情页-规格"],
         "strategy": "规则兜底计划：按平台×市场逐单元生成",
         "source": "rule",
     }
@@ -75,7 +73,10 @@ async def plan_node(state: dict) -> dict:
     plan = _fallback_plan(params)
     plan["units"] = units
     try:
-        user = f"""请为本次上架任务制定执行计划。
+        # 只让模型给一句策略。此前还要求它输出 image_plan 与 category_type，
+        # 但全链路没有任何读者（图片清单实际由 images.py 的 MAIN_SPECS/DETAIL_SPECS
+        # 决定，且与品类无关），留着会让人误以为出图按品类规划 —— 死字段比没字段更误导。
+        user = f"""请为本次上架任务给出执行策略。
 
 商品名称：{params.get("product_name", "")}
 商品品类：{params.get("category", "")}
@@ -83,8 +84,6 @@ async def plan_node(state: dict) -> dict:
 
 请输出 JSON：
 {{
-  "category_type": "商品类型判断，如 3C数码/服饰/家居",
-  "image_plan": ["需要生成的图片清单，6-9 项"],
   "strategy": "60字以内的执行策略说明（中文）"
 }}"""
         data = await state["llm"].chat_json(
@@ -92,10 +91,7 @@ async def plan_node(state: dict) -> dict:
             temperature=0.2,
             max_tokens=800,   # 规划输出很短，收紧上限以缩短首屏等待
         )
-        if isinstance(data.get("image_plan"), list) and data["image_plan"]:
-            plan["image_plan"] = [str(x) for x in data["image_plan"]][:9]
         plan["strategy"] = str(data.get("strategy") or plan["strategy"])
-        plan["category_type"] = str(data.get("category_type") or "")
         plan["source"] = "llm"
         await emitter.log(f"任务规划完成：{plan['strategy']}")
     except Exception as e:  # 规划失败不阻断，使用规则兜底

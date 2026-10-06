@@ -88,7 +88,7 @@ def _user_text(params: dict) -> str:
   "image_prompt_subject": "英文，80词以内，客观描述该商品的外观、材质、颜色、形态，用于图像生成",
   "package_contents": "包装清单；用户未提供时填 \\"未提供\\"",
   "suggested_price": {{"currency": "{currency}", "value": 39.99}},
-  "hs_keywords": ["用于类目推荐的英文关键词"]
+  "hs_keywords": ["英文通用品类词 3-6 个；用于出图的主体描述"]
 }}
 （specs / package_contents 无用户依据时分别给 [] 与 "未提供"）
 要求：
