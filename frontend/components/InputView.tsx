@@ -33,24 +33,155 @@ const IMG_KEEP_BYTES = 400 * 1024 // 小于 400KB 保留原图
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'AUD']
 
 /**
- * 模型最容易"编造"的六类事实 —— 实测生成的 Listing 里凭空出现了
- * 「0.2lb 重量」「附赠 2 节 AAA 电池」「含测试探针」这类卡片里根本没有的信息。
- * 根因是提示词要求写满卖点，而这些字段又没有依据，模型只能补全。
- * 这里把它们显式提示出来，引导用户把事实补进规格/描述，从源头减少编造。
- * 正则只做"有没有提到"的宽松判断，用于给反馈，不参与校验。
+ * 「关键信息」按品类切换，不再是全员一套 3C 清单。
+ *
+ * 原实现把「供电/电池」「认证」写死在所有商品的必备字段里：毛绒玩具、
+ * 服装、食品永远填不到满格，点一下 chip 还会往规格框里插入「供电/电池：」。
+ * 这与这块引导的初衷相反——它本来是为了压制模型编造（实测 Listing 里凭空
+ * 出现过「0.2lb 重量」「附赠 2 节 AAA 电池」），结果自己变成了编造的发起方：
+ * 用户为了消掉缺口，会去补一条他其实并不知道的事实。
+ *
+ * 因此拆成「品类档案」：每个品类给一组该品类真实存在的字段。只有
+ * 尺寸/重量/包装清单是跨品类通用的（都要发货、都要申报），其余按品类追加。
+ * 正则只做"有没有提到"的宽松判断，用于给反馈，不参与校验、不阻断提交。
  */
-const KEY_FACTS: { label: string; tip: string; pat: RegExp }[] = [
-  { label: '尺寸', tip: '长×宽×高', pat: /尺寸|长[×x*]宽|\d\s?(cm|mm|inch|in)\b/i },
-  { label: '重量', tip: '整机重量', pat: /重量|克重|\d\s?(g|kg|lb|oz)\b/i },
+interface Fact {
+  label: string
+  tip: string
+  pat: RegExp
+}
+
+interface FactProfile {
+  key: string
+  name: string
+  /** 命中该档案的宽松正则（匹配「品类 + 商品名称」文本），第一条命中生效 */
+  match: RegExp
+  facts: Fact[]
+  /** 该品类最常见的编造示例，用于缺项提示文案 */
+  fabricated: string
+  /** 占位示例：与所选品类一致，避免整页默认成耳机 */
+  sample: { name: string; category: string; specs: string }
+}
+
+const f = (label: string, tip: string, pat: RegExp): Fact => ({ label, tip, pat })
+
+// —— 跨品类通用 ——
+const F_DIM = f('尺寸', '长×宽×高，导出时作包裹尺寸', /尺寸|长[×x*]宽|\d\s?(cm|mm|inch|in)\b/i)
+const F_WEIGHT = f('重量', '单品/含包装重量', /重量|克重|\d\s?(g|kg|lb|oz)\b/i)
+const F_PACKAGE = f('包装清单', '盒内都有什么', /包装|清单|配件|附赠|随附|包含|内含|套装|说明书|数据线/i)
+// —— 品类专属 ——
+const F_MATERIAL = f('材质', '主体/接触材质', /材质|材料|面料|成分|ABS|PC\b|硅胶|金属|不锈钢|铝合金|塑料|皮革|织物|聚酯|尼龙|棉|涤/i)
+const F_POWER = f('供电/电池', '电池容量或供电方式', /电池|mAh|毫安|充电|供电|续航|USB|Type-?C|AAA|锂/i)
+const F_CERT = f('认证', '有则填，没有留空', /认证|CE\b|FCC|RoHS|UL\b|3C\b|质检|检测报告/i)
+const F_SAFETY = f('安全标准', '玩具/母婴的强制认证', /认证|标准|EN\s?71|ASTM|CE\b|3C\b|质检|检测报告|无毒/i)
+const F_SIZE = f('尺码', '尺码表或可选规格', /尺码|尺寸|均码|[smlxx]{1,3}\s?码|衣长|胸围|腰围|臀围|肩宽|袖长|脚长|鞋码|\d{2,3}\s?(cm|mm)\b/i)
+const F_CARE = f('洗涤/保养', '能否机洗、水温', /洗涤|水洗|机洗|干洗|熨烫|护理|保养|清洁方式/i)
+const F_AGE = f('适用年龄', '月龄或岁段', /适用年龄|年龄|岁|月龄|儿童|baby|kids/i)
+const F_CAPACITY = f('净含量', '克/毫升/件数', /净含量|规格|容量|净重|\d+\s?(ml|l|g|kg|片|粒|支|袋|罐|瓶)/i)
+const F_INGREDIENT = f('配料/成分', '配料表或有效成分', /配料|成分|原料|配方|protein|蛋白质|脂肪|碳水/i)
+const F_SHELF = f('保质期', '期限或储存天数', /保质期|限期|保存|效期|\d+\s?(天|个月|年)/i)
+const F_ALLERGEN = f('过敏原/储存', '致敏信息与保存条件', /过敏|致敏|麸质|乳糖|坚果|常温|冷藏|冷冻|避光/i)
+const F_SKIN = f('适用肤质', '干皮/油皮/敏感肌', /适用|肤质|发质|人群|敏感肌|干皮|油皮|混合|孕妇/i)
+
+/**
+ * 档案顺序即匹配优先级：电子最先（否则「充电宝」会被服饰的「包」抢走），
+ * 食品/美妆早于服饰（「面包」「化妆包」同理），家居放最后兜住前面没接住的。
+ * 字段名一律是该品类现实存在的属性——不给毛绒玩具挂「供电/电池」。
+ */
+const FACT_PROFILES: FactProfile[] = [
   {
-    label: '材质',
-    tip: '外壳/接触材质',
-    pat: /材质|材料|ABS|PC\b|硅胶|金属|不锈钢|铝合金|塑料|皮革|织物|聚酯|尼龙/i,
+    key: 'electronics',
+    name: '电子数码',
+    match: /电子|3c|数码|耳机|耳塞|音响|音箱|充电|电池|数据线|智能|手表|手环|灯|led|蓝牙|wi-?fi|摄像|键鼠|键盘|鼠标|移动电源|电器|数码配件/i,
+    facts: [F_DIM, F_WEIGHT, F_MATERIAL, F_POWER, F_PACKAGE, F_CERT],
+    fabricated: '凭空写上「附赠 2 节 AAA 电池」「USB-C 快充」',
+    sample: {
+      name: '如：无线蓝牙降噪耳机 Pro Max',
+      category: '如：3C数码 / 耳机',
+      specs: '直接粘贴供应商参数表即可，如：\n产品尺寸：15.2 × 8.4 × 3.1 cm\n重量：4.2g\n材质：ABS + 硅胶\n蓝牙：5.3\n电池容量：400mAh',
+    },
   },
-  { label: '供电/电池', tip: '电池容量或供电方式', pat: /电池|mAh|毫安|充电|供电|续航|USB|Type-?C|AAA|锂/i },
-  { label: '包装清单', tip: '盒内都有什么', pat: /包装|清单|配件|附赠|随附|包含|内含|套装|说明书|数据线/i },
-  { label: '认证', tip: '有则填，没有留空', pat: /认证|CE\b|FCC|RoHS|UL\b|3C\b|质检|检测报告/i },
+  {
+    key: 'food',
+    name: '食品',
+    match: /食品|零食|饮料|咖啡|茶叶|茶包|冲调|调味|粮油|坚果|糖果|巧克力|蜜饯|罐头|奶粉|保健|面包|宠物粮|猫粮|狗粮/i,
+    facts: [F_CAPACITY, F_INGREDIENT, F_SHELF, F_ALLERGEN, F_PACKAGE],
+    fabricated: '凭空写上「0 糖 0 脂」「无麸质」「进口奶源」',
+    sample: {
+      name: '如：每日坚果混合装 25g×30 袋',
+      category: '如：食品 / 坚果炒货',
+      specs: '直接粘贴供应商参数表即可，如：\n净含量：25g × 30 袋\n配料：腰果、巴旦木、蔓越莓干\n保质期：9 个月\n储存：常温避光，开封后冷藏',
+    },
+  },
+  {
+    key: 'beauty',
+    name: '美妆个护',
+    match: /美妆|彩妆|护肤|面霜|精华|口红|香水|洗发|沐浴|牙膏|个护|化妆|指甲|美甲|穿戴甲|面膜/i,
+    facts: [F_CAPACITY, F_INGREDIENT, F_SHELF, F_SKIN, F_PACKAGE, F_CERT],
+    fabricated: '凭空写上「敏感肌可用」「通过皮肤科测试」',
+    sample: {
+      name: '如：保湿精华液 30ml',
+      category: '如：美妆个护 / 面部精华',
+      specs: '直接粘贴供应商参数表即可，如：\n净含量：30ml\n主要成分：透明质酸 2%、烟酰胺 5%\n限期使用日期：开封后 6 个月\n适用：所有肤质',
+    },
+  },
+  {
+    key: 'apparel',
+    name: '服饰鞋包',
+    match: /服饰|服装|男装|女装|内衣|内裤|袜|鞋|帽|围巾|手套|背包|箱包|钱包|t恤|衬衫|裤|裙|外套|羽绒|面料|穿戴/i,
+    facts: [F_SIZE, F_MATERIAL, F_WEIGHT, F_CARE, F_PACKAGE],
+    fabricated: '凭空写上「可机洗免熨烫」「缩水率 <2%」',
+    sample: {
+      name: '如：男士纯棉短袖T恤 两件套',
+      category: '如：服饰 / 男装T恤',
+      specs: '直接粘贴供应商参数表即可，如：\n尺码：M/L/XL（衣长 70 · 胸围 106 cm）\n面料：95% 棉 5% 氨纶\n克重：180g\n洗涤：30℃ 机洗',
+    },
+  },
+  {
+    key: 'toys',
+    name: '玩具母婴',
+    match: /玩具|模型|手办|积木|毛绒|公仔|娃娃|拼图|儿童|婴儿|母婴|益智|遥控车/i,
+    facts: [F_DIM, F_WEIGHT, F_MATERIAL, F_AGE, F_PACKAGE, F_SAFETY],
+    fabricated: '凭空写上「附赠 2 节 AAA 电池」「已通过 EN71 检测」',
+    sample: {
+      name: '如：毛绒兔子玩偶 30cm',
+      category: '如：玩具 / 毛绒公仔',
+      specs: '直接粘贴供应商参数表即可，如：\n尺寸：30 × 18 × 15 cm\n重量：210g\n材质：短毛绒 + PP 棉\n适用年龄：3 岁以上\n包装清单：玩偶 ×1 · 吊牌',
+    },
+  },
+  {
+    key: 'home',
+    name: '家居百货',
+    match: /家居|厨房|餐具|收纳|清洁|家具|灯具|家纺|窗帘|床品|浴|五金|园艺|办公/i,
+    facts: [F_DIM, F_WEIGHT, F_MATERIAL, F_PACKAGE, F_CERT],
+    fabricated: '凭空写上「食品级硅胶」「承重 50kg」',
+    sample: {
+      name: '如：可折叠收纳箱 55L',
+      category: '如：家居 / 收纳整理',
+      specs: '直接粘贴供应商参数表即可，如：\n尺寸：45 × 32 × 24 cm\n重量：1.1kg\n材质：PP 聚丙烯\n包装清单：收纳箱 ×1',
+    },
+  },
 ]
+
+/** 未识别品类时的兜底档案：只保留跨品类都成立的事实，不含电池 */
+const GENERAL_PROFILE: FactProfile = {
+  key: 'general',
+  name: '通用品类',
+  match: /(?!)/,
+  facts: [F_DIM, F_WEIGHT, F_MATERIAL, F_PACKAGE, F_CERT],
+  fabricated: '凭空写上「附赠电池」「0.2lb 重量」',
+  sample: {
+    name: '如：商品名称（中文）',
+    category: '如：家居 / 收纳',
+    specs: '直接粘贴供应商参数表即可，如：\n产品尺寸：15.2 × 8.4 × 3.1 cm\n重量：4.2g\n材质：ABS + 硅胶\n包装清单：主体 ×1 · 说明书',
+  },
+}
+
+/** 品类档案匹配：看「品类 + 商品名称」，任一处命中即采用该档案 */
+function pickProfile(category: string, productName: string): FactProfile {
+  const text = `${category}\n${productName}`
+  return FACT_PROFILES.find((p) => p.match.test(text)) ?? GENERAL_PROFILE
+}
 
 /** 压缩实拍图：长边 ≤ IMG_MAX_SIDE、JPEG 85%（小图保留原图），避免多张大原图撑爆请求体 */
 function compressImage(file: File): Promise<string> {
@@ -193,11 +324,13 @@ export default function InputView({ meta, starting, onStart }: Props) {
   const descThin = description.trim().length < DESC_SOFT_MIN
   const priceNum = price.trim() === '' ? null : Number(price)
 
-  // 关键事实覆盖度：规格 + 描述一起判断（用户在哪儿写了都算）
+  // 关键事实覆盖度：按品类档案判定（规格 + 描述一起看，用户在哪儿写了都算）
+  const profile = pickProfile(category, productName)
   const factsText = `${specs}\n${description}`
-  const factsMissing = KEY_FACTS.filter((f) => !f.pat.test(factsText))
-  const factsCovered = KEY_FACTS.length - factsMissing.length
-  const factsThin = factsMissing.length >= 3
+  const factsMissing = profile.facts.filter((x) => !x.pat.test(factsText))
+  const factsCovered = profile.facts.length - factsMissing.length
+  // 阈值跟着清单条数走：过半缺项才算"偏少"，与原先 6 项缺 3 项的口径一致
+  const factsThin = factsMissing.length >= Math.max(2, Math.ceil(profile.facts.length * 0.5))
 
   const insertFact = (label: string) => {
     setSpecs((s) => (s.trim() ? `${s.replace(/\s+$/, '')}\n${label}：` : `${label}：`))
@@ -267,7 +400,7 @@ export default function InputView({ meta, starting, onStart }: Props) {
                   className="input"
                   value={productName}
                   maxLength={80}
-                  placeholder="如：无线蓝牙降噪耳机 Pro Max"
+                  placeholder={profile.sample.name}
                   onChange={(e) => setProductName(e.target.value)}
                 />
               </div>
@@ -280,9 +413,13 @@ export default function InputView({ meta, starting, onStart }: Props) {
                   className="input"
                   value={category}
                   maxLength={30}
-                  placeholder="如：3C数码 / 耳机"
+                  placeholder={profile.sample.category}
                   onChange={(e) => setCategory(e.target.value)}
                 />
+                <div className="hint">
+                  <Icon name="info" size={12} />
+                  填写品类会按商品类型切换下方的「关键信息」清单
+                </div>
               </div>
             </div>
 
@@ -359,9 +496,17 @@ export default function InputView({ meta, starting, onStart }: Props) {
               </div>
               <div className="field">
                 <label className="form-label">
-                  <span>规格参数</span>
+                  <span>
+                    规格参数{' '}
+                    <span
+                      className="opt-tag"
+                      title={`关键信息清单按品类切换：当前为「${profile.name}」。填写「商品品类」或商品名称后会自动匹配对应清单`}
+                    >
+                      {profile.name}
+                    </span>
+                  </span>
                   <span className={`counter${factsThin ? ' over' : ''}`}>
-                    关键信息 {factsCovered}/{KEY_FACTS.length}
+                    关键信息 {factsCovered}/{profile.facts.length}
                   </span>
                 </label>
                 <textarea
@@ -369,25 +514,23 @@ export default function InputView({ meta, starting, onStart }: Props) {
                   className="textarea"
                   value={specs}
                   rows={3}
-                  placeholder={
-                    '直接粘贴供应商参数表即可，如：\n产品尺寸：15.2 × 8.4 × 3.1 cm\n重量：4.2g\n材质：ABS + 硅胶\n蓝牙：5.3'
-                  }
+                  placeholder={profile.sample.specs}
                   onChange={(e) => setSpecs(e.target.value)}
                 />
                 {/* 这几类事实缺失时模型最爱自行编造，点一下即可插入字段名 */}
                 <div className="fact-chips">
-                  {KEY_FACTS.map((f) => {
-                    const on = !factsMissing.includes(f)
+                  {profile.facts.map((x) => {
+                    const on = !factsMissing.includes(x)
                     return (
                       <button
-                        key={f.label}
+                        key={x.label}
                         type="button"
                         className={`fact-chip${on ? ' on' : ''}`}
-                        onClick={() => insertFact(f.label)}
-                        title={on ? `${f.label}（已提供）· ${f.tip}` : `缺「${f.label}」（${f.tip}）· 点击插入`}
+                        onClick={() => insertFact(x.label)}
+                        title={on ? `${x.label}（已提供）· ${x.tip}` : `缺「${x.label}」（${x.tip}）· 点击插入`}
                       >
                         <Icon name={on ? 'check' : 'plus'} size={10} strokeWidth={2.8} />
-                        {f.label}
+                        {x.label}
                       </button>
                     )
                   })}
@@ -395,8 +538,8 @@ export default function InputView({ meta, starting, onStart }: Props) {
                 <div className={`hint${factsThin ? ' warn' : ''}`}>
                   <Icon name={factsThin ? 'alert' : 'ruler'} size={12} />
                   {factsMissing.length === 0
-                    ? '关键信息已齐备，模型无需靠推测补全参数'
-                    : `还缺 ${factsMissing.map((f) => f.label).join('、')} —— 缺项没有依据时，模型容易自行编造（例如凭空写上「附赠电池」「0.2lb 重量」）`}
+                    ? `「${profile.name}」关键信息已齐备，模型无需靠推测补全参数`
+                    : `还缺 ${factsMissing.map((x) => x.label).join('、')} —— 缺项没有依据时，模型容易自行编造（例如${profile.fabricated}）`}
                 </div>
               </div>
             </div>
@@ -741,7 +884,7 @@ export default function InputView({ meta, starting, onStart }: Props) {
                   <div className="notice info">
                     <Icon name="info" size={14} />
                     <span>
-                      规格信息偏少（缺 {factsMissing.map((f) => f.label).join('、')}）：
+                      「{profile.name}」关键信息偏少（缺 {factsMissing.map((x) => x.label).join('、')}）：
                       生成结果可能出现与实物不符的参数，建议补充后再提交
                     </span>
                   </div>
