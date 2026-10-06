@@ -91,32 +91,90 @@ def _extract_dims(specs: list[dict]) -> tuple[float, float, float] | None:
     return None
 
 
-def _extract_weight_kg(specs: list[dict]) -> float | None:
-    """从规格名含「重量/净重/毛重/weight」且**值带单位**的项提取重量，统一转为 kg。
+_WEIGHT_NUM = re.compile(r"(\d+(?:\.\d+)?)\s*(kg|千克|公斤|g|克|lb|磅|oz|盎司)", re.I)
+_WEIGHT_MULTI = re.compile(r"[×x*]\s*\d+(?:\.\d+)?", re.I)
 
-    找不到、或值里没写单位，一律返回 None（留空）。原先无单位时按克猜，而
-    「重量：0.25」这类填法实际单位是 kg，会被当成 0.25 g —— 猜错不会让导入
-    报错，只会让运费与 FBA 尺寸重量按一个假数字算，和文案侧「宁缺勿编」是同
-    一条纪律，此前只是没推广到单位判定上。
+
+def _to_kg(n: float, unit: str) -> float:
+    if unit in ("kg", "千克", "公斤"):
+        return round(n, 3)
+    if unit in ("g", "克"):
+        return round(n / 1000, 4)
+    if unit in ("lb", "磅"):
+        return round(n * 0.4536, 3)
+    return round(n * 0.02835, 3)  # oz / 盎司
+
+
+def _weight_specs(specs: list[dict]):
+    """名字带重量字样的规格项（值不一定是单个数字，见 _weight_read）。"""
+    for s in specs:
+        if re.search(r"重量|净重|毛重|weight", str(s.get("name", "")), re.I):
+            yield s
+
+
+def _weight_read(value: str) -> tuple[float | None, bool]:
+    """读一条规格值里的重量，返回 (唯一的 kg 值, 是否存在歧义)。
+
+    两种歧义都不猜：
+      - 值里有多个带单位的数字。实测这条「重量：单耳 4.6 g / 含仓 43 g」，旧实现
+        取第一个数字，把 4.6 g 当包裹重量写进模板，而含仓实际 43 g —— 运费/FBA
+        重量差约 10 倍，而且这一格非空，在《上架对照表》里拿到的状态是「可直接粘贴」；
+      - 值写成单件×件数（「净重 25g×30袋」），单件重乘件数才是总重，件数还不一定写全。
+    """
+    if _WEIGHT_MULTI.search(value):
+        return None, True
+    found = [_to_kg(float(n), u.lower()) for n, u in _WEIGHT_NUM.findall(value)]
+    if not found:
+        return None, False   # 没有带单位的数字：单纯没写，不是歧义
+    if len(found) > 1:
+        return None, True
+    return found[0], False
+
+
+def _extract_weight_kg(specs: list[dict]) -> float | None:
+    """从规格名含「重量/净重/毛重/weight」的项提取包裹重量，统一转为 kg。
+
+    值里没写单位、或有单位却存在歧义，一律返回 None（留空）。原先无单位时按克猜，
+    而「重量：0.25」这类填法实际单位是 kg，会被当成 0.25 g —— 猜错不会让导入报错，
+    只会让运费与 FBA 尺寸重量按一个假数字算，和文案侧「宁缺勿编」是同一条纪律，
+    此前只是没推广到单位与取值上。
+    """
+    for s in _weight_specs(specs):
+        kg, ambiguous = _weight_read(str(s.get("value", "")))
+        if kg is not None:
+            return kg
+        if ambiguous:
+            # 有歧义时不再去后面的规格里另挑一个数字 —— 那同样是猜
+            return None
+    return None
+
+
+def _weight_ambiguous_note(specs: list[dict]) -> str:
+    """重量因歧义留空时，给报告一句能照着改的说明；没写/无歧义则空串。"""
+    for s in _weight_specs(specs):
+        value = str(s.get("value", ""))
+        if _weight_read(value)[1]:
+            return f"规格「{s.get('name')}：{value}」里有多个可当作重量的数字（或写成单件×件数）"
+    return ""
+
+
+_MODEL_NAME = re.compile(
+    r"^\s*(型号|产品型号|规格型号|货号|item\s*no\.?|model(\s*(no|number))?\.?|part\s*no\.?)\s*$", re.I
+)
+
+
+def _model_from_specs(specs: list[dict]) -> str:
+    """型号只照抄用户规格里写了的那一条；没写就留空。
+
+    这里原先是拿英文商品名拼 PN-XXX（编号造假）。但实测供应商参数表里常常真有
+    「型号：NOVAPOD X7」这一条，一律留空等于把已有事实丢掉 —— 该防的是编，不是抄。
     """
     for s in specs:
-        name = str(s.get("name", ""))
-        if not re.search(r"重量|净重|毛重|weight", name, re.I):
-            continue
-        # 单位是必填项：正则里不带 `?`，没有单位就不匹配
-        m = re.search(r"(\d+(?:\.\d+)?)\s*(kg|千克|公斤|g|克|lb|磅|oz|盎司)", str(s.get("value", "")), re.I)
-        if not m:
-            continue
-        n = float(m.group(1))
-        u = m.group(2).lower()
-        if u in ("kg", "千克", "公斤"):
-            return round(n, 3)
-        if u in ("g", "克"):
-            return round(n / 1000, 4)
-        if u in ("lb", "磅"):
-            return round(n * 0.4536, 3)
-        return round(n * 0.02835, 3)  # oz / 盎司
-    return None
+        if _MODEL_NAME.match(str(s.get("name", "")).strip()):
+            value = str(s.get("value", "")).strip()
+            if value:
+                return value[:80]
+    return ""
 
 
 def _pkg_fields(specs: list[dict]) -> dict:
@@ -150,8 +208,9 @@ MANUAL_FIELDS: dict[str, dict[str, str]] = {
         "fulfillment_latency": "发货时效，取决于卖家自己的履约能力",
         "target_gender": "适用性别需与实物一致，不作默认值以免错放筛选条件",
         "size_name": "平台尺码须落在该类目允许值内，按实物填写",
-        "part_number": "型号须与实物铭牌、外包装一致。此前我们拿英文商品名拼一个 PN-XXX 填进去，"
-                       "导入不会报错，但那是平台里查不到的编号，会跟着商品长期存在，故改为留空",
+        "part_number": "型号：规格里写了「型号/货号/model」就照抄进这一列；这条商品没写，"
+                       "所以留空。此前我们拿英文商品名拼一个 PN-XXX 填进去，导入不会报错，"
+                       "但那是平台里查不到的编号，会跟着商品长期存在",
         "recommended_browse_nodes": "类目节点是平台签发的数字 ID，不能由关键词拼串代替",
         "main_image_url": "图片列留空即可：包内 Amazon_图片包_*.zip 里的图已按 <SKU>.MAIN.jpg、"
                           "<SKU>.PT01…PT08.jpg 命名，在后台 Catalog·Images·Upload images 上传该 zip "
@@ -185,6 +244,19 @@ MANUAL_FIELDS: dict[str, dict[str, str]] = {
 }
 
 
+# 包裹重量/尺寸：各平台列名不同，但来源都是商品规格，读不出唯一取值时只能卖家称重。
+PKG_COLUMNS: dict[str, tuple[str, ...]] = {
+    "amazon": ("package_length", "package_width", "package_height", "package_weight"),
+    "aliexpress": ("Package Length(cm)", "Package Width(cm)", "Package Height(cm)", "Package Weight(kg)"),
+    "shopee": ("商品重量(g)", "包裹长(cm)", "包裹宽(cm)", "包裹高(cm)"),
+    "tiktok": ("Weight(kg)", "Package Length(cm)", "Package Width(cm)", "Package Height(cm)"),
+}
+PKG_WHY = (
+    "包裹重量与长宽高按实物申报，直接决定运费与 FBA 尺寸重量计费。"
+    "规格里没写、或写得读不出唯一取值（如「单耳 4.6 g / 含仓 43 g」）时我们留空不猜"
+)
+
+
 def _is_placeholder(val) -> bool:
     """该列是不是"我们其实填不了"：留空，或填的是包内相对路径。
 
@@ -197,11 +269,19 @@ def _is_placeholder(val) -> bool:
 
 def _manual_for(pk: str, row: dict) -> list[tuple[str, str]]:
     """列出该模板中我们填不了、必须卖家补的列（仅报真正留空/占位的那些）。"""
-    return [
+    out = [
         (col, why)
         for col, why in MANUAL_FIELDS.get(pk, {}).items()
         if col in row and _is_placeholder(row.get(col))
     ]
+    # 包裹重量/尺寸不是「只有卖家才有」的列，它本该由商品规格算出来；但提不到、
+    # 或读不出唯一取值时，也只有卖家称重填得准。状态判定原先按「非空即可直接粘贴、
+    # 空着就是可留空」两分，结果一个决定运费的空格被显示成可以不管 —— 归回补填类。
+    listed = {c for c, _ in out}
+    for col in PKG_COLUMNS.get(pk, ()):
+        if col in row and col not in listed and _is_placeholder(row.get(col)):
+            out.append((col, PKG_WHY))
+    return out
 
 
 # 各平台模板里的图片列：对照表把它们从「字段」区块剔出去，单独按槽位说明，
@@ -423,7 +503,7 @@ def _build_row(pk: str, card: dict, listing: dict, market_key: str) -> dict:
             "item_type": card.get("category", ""),
             "color_name": visual.get("color", ""),
             "size_name": "",
-            "part_number": "",
+            "part_number": _model_from_specs(specs),
             "manufacturer": brand if brand != "Generic" else "",
             "product_id": "", "product_id_type": "GTIN",             "condition_type": "New",
             "standard_price": price.get("value", 39.99),
@@ -577,7 +657,9 @@ def _report_md(p, card: dict, listing: dict, checks: list[dict], quality: dict,
         lines.append(
             f"- 价格：{price.get('currency', 'USD')} {price.get('value', '')}（模型估计值，建议核对成本与竞品后再上传）"
         )
-    pkg = _pkg_fields(card.get("specs") or [])
+    specs_list = card.get("specs") or []
+    pkg = _pkg_fields(specs_list)
+    amb = _weight_ambiguous_note(specs_list)
     missing = [
         name
         for name, ok in (
@@ -587,8 +669,15 @@ def _report_md(p, card: dict, listing: dict, checks: list[dict], quality: dict,
         if not ok
     ]
     if missing:
+        # 留空的原因要分开说：没提取到 ≠ 提取到了但不敢替你选，后者得卖家自己称重
+        why = "从规格参数里读不出唯一取值（见下一条）" if amb else "未能从规格参数提取"
         lines.append(
-            f"- 待补字段：{'、'.join(missing)}未能从规格参数提取，模板中已留空，请上传前补填（影响运费/FBA 费用计算）"
+            f"- 待补字段：{'、'.join(missing)}{why}，模板中已留空，请上传前补填（影响运费/FBA 费用计算）"
+        )
+    if amb and not pkg["package_weight"]:
+        lines.append(
+            f"- 包裹重量为什么不代填：{amb}。哪一个才是含包装的称重值我们不替你选，"
+            f"请按实物称重补填 —— 这项直接决定运费与 FBA 尺寸重量计费"
         )
     if card.get("brand") == "Generic":
         lines.append("- 品牌：Generic（未提供品牌，已安全兜底；如为自有品牌请补填后重新生成）")

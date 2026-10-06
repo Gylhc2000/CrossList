@@ -12,12 +12,15 @@ from app.agent.nodes.export import (
     AMZ_SLOTS,
     IMAGE_COLUMNS,
     MANUAL_FIELDS,
+    PKG_COLUMNS,
+    PKG_WHY,
     TEMPLATES,
     _amazon_image_pack,
     _build_row,
     _is_placeholder,
     _manual_for,
     _pkg_fields,
+    _weight_ambiguous_note,
     _zip_flat,
     make_sku,
 )
@@ -127,6 +130,56 @@ def test_amazon_row_does_not_invent_part_number():
     assert row["part_number"] == ""
     assert "part_number" in MANUAL_FIELDS["amazon"]
     assert "part_number" in dict(_manual_for("amazon", row))
+
+
+def test_part_number_is_copied_when_the_sheet_states_it():
+    """规格里写了型号就该照抄：该防的是「编」，不是一律不填。
+
+    实测这份参数表第一条就是「型号：NOVAPOD X7」，一律留空等于把已有事实丢掉。
+    """
+    card = dict(CARD, specs=[{"name": "型号", "value": "NOVAPOD X7"}], product_name_en="NOVAPOD X7 Earbuds")
+    row = _build_row("amazon", card, LISTING, "us")
+    assert row["part_number"] == "NOVAPOD X7"
+    assert "part_number" not in dict(_manual_for("amazon", row))
+
+
+# ---------------- 重量：一条规格里有多个候选时不替你选 ----------------
+def test_ambiguous_weight_leaves_the_column_blank():
+    """真实踩到的输入：「重量：单耳 4.6 g / 含仓 43 g」。
+
+    旧实现取第一个带单位的数字 → package_weight = 0.0046 KG，而含仓是 43 g，
+    差约 10 倍；更要命的是这一格非空，对照表按「非空即可直接粘贴」显示，
+    于是错值被当成成品交给卖家。
+    """
+    specs = [{"name": "重量", "value": "单耳 4.6 g / 含仓 43 g"}]
+    assert _pkg_fields(specs)["package_weight"] == ""
+    assert "单耳 4.6 g" in _weight_ambiguous_note(specs)
+    # 单件×件数：25 g 是单件重，乘 30 袋才是总重，同样不猜
+    assert _pkg_fields([{"name": "净重", "value": "25g×30袋"}])["package_weight"] == ""
+    # 有歧义就不再往后找一条"看着更合适"的数字 —— 那同样是猜
+    both = specs + [{"name": "毛重", "value": "60g"}]
+    assert _pkg_fields(both)["package_weight"] == ""
+    # 唯一取值照常提取，且单位换算不变
+    assert _pkg_fields([{"name": "重量", "value": "约 43 g"}])["package_weight"] == 0.043
+
+
+def test_blank_package_columns_count_as_seller_work():
+    """留空的包裹列不能显示成「可留空」：它决定运费，只是我们读不出来。"""
+    row = _build_row("amazon", dict(CARD, specs=[{"name": "材质", "value": "ABS"}]), LISTING, "us")
+    manual = dict(_manual_for("amazon", row))
+    assert {"package_length", "package_weight"} <= set(manual)
+    assert manual["package_weight"] == PKG_WHY
+    # 且只对留空的列生效，填上了就别出现在补填清单里
+    assert {"package_length", "package_weight"} >= set(
+        c for c, _ in _manual_for("amazon", _build_row("amazon", CARD, LISTING, "us"))
+        if c.startswith("package_")
+    )
+
+
+def test_pkg_columns_all_exist_in_their_platform_template():
+    """列名写错就等于这条待补永远不出现，所以按模板列集合校验一次。"""
+    for pk, cols in PKG_COLUMNS.items():
+        assert set(cols) <= set(TEMPLATES[pk][0]), (pk, cols)
 
 
 # ---------------- Amazon 图片包 ----------------
