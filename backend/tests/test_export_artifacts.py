@@ -103,6 +103,32 @@ def test_pkg_fields_leaves_missing_values_empty():
     assert pkg["package_weight_unit"] == ""
 
 
+def test_pkg_fields_refuses_unitless_weight():
+    """「重量：0.25」这类填法多半是 kg，按克猜会把运费/FBA 重量算错 1000 倍。
+
+    旧实现在无单位时默认按克处理，猜错不会让导入报错，只会静默写进店铺，
+    与「宁缺勿猜」冲突 —— 现在一律留空，由卖家补。
+    """
+    for specs in ([{"name": "重量", "value": "0.25"}],
+                  [{"name": "净重", "value": "1 斤"}],
+                  [{"name": "weight", "value": "300"}]):
+        pkg = _pkg_fields(specs)
+        assert pkg["package_weight"] == "", specs
+        assert pkg["package_weight_unit"] == "", specs
+
+
+def test_amazon_row_does_not_invent_part_number():
+    """型号只能来自实物：以前拿英文商品名拼 PN-XXX，是编号造假而非填表。
+
+    非空的假值会带着「可直接粘贴」的状态进对照表，卖家无从发现，所以它必须
+    留空并出现在「需卖家补填」清单里（与保修、库存同一条纪律）。
+    """
+    row = _build_row("amazon", CARD, LISTING, "us")
+    assert row["part_number"] == ""
+    assert "part_number" in MANUAL_FIELDS["amazon"]
+    assert "part_number" in dict(_manual_for("amazon", row))
+
+
 # ---------------- Amazon 图片包 ----------------
 def test_image_pack_filenames_pair_sku_with_slot():
     images = {f: _png() for f in ALL_IMAGE_FILES}

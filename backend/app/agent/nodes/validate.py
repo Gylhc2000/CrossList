@@ -34,6 +34,12 @@ def _card_digest(card: dict) -> str:
     被误判为「编造卖点」→ 升级 error → fix 闭环把真卖点从 Listing 里删掉
     （实测 IPX5、CE/FCC/RoHS 均中招）。specs 全量传入；包装清单与原始描述
     是提示词明确要求核对的事实维度，一并传入。
+
+    长度上限（specs[:40] / description[:300]）也一并撤了：它们与上面这句
+    「全量传入」自相矛盾，而截断恰好复刻当年 IPX5 那类误判——长尺码表、多参数
+    商品的尾部规格与描述后半段对评分模型不可见，真实声明被判编造后被我删掉。
+    成本有上界：规格与描述在进入任务前已被 jobs.py 的 SPECS_MAX=4000 /
+    DESC_MAX=1200 限长，这里只是不再二次截。
     """
     specs = card.get("specs") or []
     return json.dumps(
@@ -41,9 +47,9 @@ def _card_digest(card: dict) -> str:
             "product_name": card.get("product_name_en") or card.get("product_name_zh"),
             "category": card.get("category"),
             "core_selling_points": card.get("core_selling_points") or [],
-            "specs": [f"{s.get('name')}={s.get('value')}" for s in specs][:40],
+            "specs": [f"{s.get('name')}={s.get('value')}" for s in specs],
             "package_contents": card.get("package_contents") or "",
-            "description": (card.get("description") or "")[:300],
+            "description": card.get("description") or "",
         },
         ensure_ascii=False,
     )

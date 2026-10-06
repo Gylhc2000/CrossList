@@ -92,26 +92,30 @@ def _extract_dims(specs: list[dict]) -> tuple[float, float, float] | None:
 
 
 def _extract_weight_kg(specs: list[dict]) -> float | None:
-    """从规格名含「重量/净重/毛重/weight」的项提取重量，统一转为 kg；找不到返回 None。"""
+    """从规格名含「重量/净重/毛重/weight」且**值带单位**的项提取重量，统一转为 kg。
+
+    找不到、或值里没写单位，一律返回 None（留空）。原先无单位时按克猜，而
+    「重量：0.25」这类填法实际单位是 kg，会被当成 0.25 g —— 猜错不会让导入
+    报错，只会让运费与 FBA 尺寸重量按一个假数字算，和文案侧「宁缺勿编」是同
+    一条纪律，此前只是没推广到单位判定上。
+    """
     for s in specs:
         name = str(s.get("name", ""))
         if not re.search(r"重量|净重|毛重|weight", name, re.I):
             continue
-        m = re.search(r"(\d+(?:\.\d+)?)\s*(kg|千克|公斤|g|克|lb|磅|oz|盎司)?", str(s.get("value", "")), re.I)
+        # 单位是必填项：正则里不带 `?`，没有单位就不匹配
+        m = re.search(r"(\d+(?:\.\d+)?)\s*(kg|千克|公斤|g|克|lb|磅|oz|盎司)", str(s.get("value", "")), re.I)
         if not m:
             continue
         n = float(m.group(1))
-        u = (m.group(2) or "").lower()
+        u = m.group(2).lower()
         if u in ("kg", "千克", "公斤"):
             return round(n, 3)
         if u in ("g", "克"):
             return round(n / 1000, 4)
         if u in ("lb", "磅"):
             return round(n * 0.4536, 3)
-        if u in ("oz", "盎司"):
-            return round(n * 0.02835, 3)
-        # 无单位：中文规格表默认按克处理
-        return round(n / 1000, 4)
+        return round(n * 0.02835, 3)  # oz / 盎司
     return None
 
 
@@ -133,6 +137,8 @@ def _pkg_fields(specs: list[dict]) -> dict:
 # 这里曾经是硬编码猜测值（库存 500、保修 12 个月、原产地 CN、品类 consumer-electronics）。
 # 猜错不会让导入报错，而是把那行假数据直接写进卖家店铺 —— 虚假保修声明甚至构成法律承诺。
 # 这与文案侧「宁缺勿编」是同一条纪律，此前只是没推广到商务字段。
+# 同批清掉的还有 part_number：它由英文商品名拼成 PN-XXX，看着像我们填的，其实是编号造假，
+# 而《上架对照表》按「非空即可直接粘贴」标状态，假型号会被当成成品直接上传。
 # 值留空即代表「我们填不了」，报告里逐条列出，卖家填完再上传。
 MANUAL_FIELDS: dict[str, dict[str, str]] = {
     "amazon": {
@@ -144,6 +150,8 @@ MANUAL_FIELDS: dict[str, dict[str, str]] = {
         "fulfillment_latency": "发货时效，取决于卖家自己的履约能力",
         "target_gender": "适用性别需与实物一致，不作默认值以免错放筛选条件",
         "size_name": "平台尺码须落在该类目允许值内，按实物填写",
+        "part_number": "型号须与实物铭牌、外包装一致。此前我们拿英文商品名拼一个 PN-XXX 填进去，"
+                       "导入不会报错，但那是平台里查不到的编号，会跟着商品长期存在，故改为留空",
         "recommended_browse_nodes": "类目节点是平台签发的数字 ID，不能由关键词拼串代替",
         "main_image_url": "图片列留空即可：包内 Amazon_图片包_*.zip 里的图已按 <SKU>.MAIN.jpg、"
                           "<SKU>.PT01…PT08.jpg 命名，在后台 Catalog·Images·Upload images 上传该 zip "
@@ -348,20 +356,27 @@ def _worksheet_inputs(pk: str, p, columns: list[str], row: dict, card: dict,
     blocks = [("① 模板字段 · 逐格复制", text_rows)]
     if img_rows:
         blocks.append(("② 图片 · 槽位对照", img_rows))
-    blocks.append((
-        "③ 使用前必读",
-        [
-            ["模板性质", "演示版列集合", "需卖家替换", "",
-             "本表列名按公开资料整理，不是从卖家后台下载的官方模板；"
-             "正式批量上传请以官方模板为准并重新映射列"],
-            ["变体", "本表一行 = 一个 SKU", "需卖家补填", "",
-             "有颜色/尺寸等变体时，平台要求每个变体一行（并填父体关系行），"
-             "本工具未生成变体行"],
-            ["留空列", "见「需卖家补填」", "需卖家补填", "",
-             "这些值只有卖家或平台才有（库存、保修、类目 ID、GTIN 条码等），"
-             "猜值不会让导入报错，而是把假数据写进店铺，所以刻意留空"],
-        ],
-    ))
+    must_read = [
+        ["模板性质", "演示版列集合", "需卖家替换", "",
+         "本表列名按公开资料整理，不是从卖家后台下载的官方模板；"
+         "正式批量上传请以官方模板为准并重新映射列"],
+        ["变体", "本表一行 = 一个 SKU", "需卖家补填", "",
+         "有颜色/尺寸等变体时，平台要求每个变体一行（并填父体关系行），"
+         "本工具未生成变体行"],
+        ["留空列", "见「需卖家补填」", "需卖家补填", "",
+         "这些值只有卖家或平台才有（库存、保修、类目 ID、GTIN 条码等），"
+         "猜值不会让导入报错，而是把假数据写进店铺，所以刻意留空"],
+    ]
+    if pk == "amazon":
+        # 这三格是 Amazon 模板特有的列，其余平台没有对应字段，不该出现在它们的对照表里
+        must_read.append([
+            "默认值", "condition_type=New · is_adult_product=No · product_id_type=GTIN",
+            "需卖家核对", "",
+            "这三格不是留空、也不是我们从商品信息里得来的事实，而是按「新品 / 非成人用品 / "
+            "走 GTIN 条码」的常见情况取的默认值。二手、翻新、成人用品、无条码（走豁免申请）"
+            "四种情况必须改成实际值，其余可按现状上传",
+        ])
+    blocks.append(("③ 使用前必读", must_read))
     return title, meta, blocks
 
 
@@ -408,7 +423,7 @@ def _build_row(pk: str, card: dict, listing: dict, market_key: str) -> dict:
             "item_type": card.get("category", ""),
             "color_name": visual.get("color", ""),
             "size_name": "",
-            "part_number": f"PN-{slug(name_en).upper()}",
+            "part_number": "",
             "manufacturer": brand if brand != "Generic" else "",
             "product_id": "", "product_id_type": "GTIN",             "condition_type": "New",
             "standard_price": price.get("value", 39.99),

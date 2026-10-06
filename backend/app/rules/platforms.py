@@ -449,7 +449,7 @@ AMAZON_FIELD_NOTES: dict[str, str] = {
     "other_image_url4": "辅图4", "other_image_url5": "辅图5",
     "item_type": "商品类型关键词", "color_name": "颜色",
     "size_name": "尺寸 · 需卖家填（平台尺码须落在类目允许值内）",
-    "part_number": "型号", "manufacturer": "制造商",
+    "part_number": "型号 · 需卖家填（须与实物铭牌一致，我们不代填）", "manufacturer": "制造商",
     "product_id": "商品编码（UPC/EAN/GTIN）· 需卖家填，无法生成",
     "product_id_type": "编码类型",
     "condition_type": "商品状况（New）", "standard_price": "售价", "currency": "币种",
