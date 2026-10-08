@@ -2,7 +2,7 @@
 
 一键多平台商品上架素材智能体 —— 从商品原始信息到 Amazon / AliExpress / Shopee / TikTok Shop 批量上传素材包的全链路自动化。
 
-## 技术选型（对齐《方案概述》4.4）
+## 技术选型
 
 | 层 | 方案选型 | 本项目实现 |
 |---|---|---|
@@ -124,12 +124,6 @@ plan ──► parse ──┬─► listing ──┐
 | GET | `/api/jobs/{id}/asset?p=images/xx.png` | 素材图 |
 | GET | `/api/jobs/{id}/download?scope=all\|amazon` | zip 下载（流式） |
 
-## 已验证与未验证（2026-10-05 本机实测）
-
-**跑通并核对过内容**：邀请码注册 → 会话 Cookie → 任务创建（含跨市场组合）→ SSE 进度 → 多语言 Listing → 9 张素材图按平台尺寸适配（Amazon 实测 2000×2000）→ 规则校验与自动修正 → 交付物生成 → 按平台/全量下载 → 历史记录与删除 → 重启后冷记录重建。交付物层面逐字节核对过：`Amazon_图片包_*.zip` 的 9 个条目都在 zip 根目录、文件名前缀与模板 `item_sku` 逐字符一致、全部为真 JPEG；同平台多市场的 SKU 不重复；模板图片列一律留空。安全层面：4 种目录穿越写法均 404、未登录 401、跨站写请求 403、连错 8 次锁定 429、改口令会吊销该账号其它会话。`python -m pytest` 为 **56 passed**。
-
-**没验证、也做不到验证的**：任何一次**真实平台后台导入**。批量上传模板需登录卖家后台按类目下载，类目要平台签发的数字 ID，图片要平台媒体库回写的 URL——这些都需要卖家授权（四个平台均要求营业执照），本项目当前拿不到。所以包内的模板是**演示版列集合**，README 与每份质量报告都对此做了明示。未测项还包括：`next build` 生产构建、并发额度 429 的真实触发。
-
 ## 说明
 
 - 每个平台目录内含：Listing 文案 `.txt`、批量上传模板（xlsx/csv）、**上架对照表** `.xlsx`（一字段一行 + 状态/计量，给在网页后台逐个表单上架的卖家直接复制）、质量报告 `.md`，以及按该平台尺寸适配好的 `images/`。
@@ -139,10 +133,3 @@ plan ──► parse ──┬─► listing ──┐
 - 市场选择**不做平台拦截**：`MARKETS` 目前覆盖 美国 / 韩国 / 巴西 / 日本 / 德国 / 西班牙 六个市场，每个平台的"真实站点清单"（`Platform.markets`，来源为公开资料、待官方复核）只用于提示——勾了该平台没有自营站点的组合时照常生成，但会在进度告警、质量报告和输入页同时标注"仅作素材参考，不可直接上架"。要扩市场（如 Shopee 的东南亚与台湾站）需同时补语言与书写系统白名单。
 - 未启用 LangGraph checkpointer：state 中含 `emitter` / `llm` / `storage` 等运行期对象，序列化成本高；条件回边能力已完整保留。
 - `demo/` 为早期 Node.js 单进程版本，保留作对照，新开发请用 `backend/` + `frontend/`。
-
-### 图像接口说明（2026-09-01 已解决）
-
-- qwen-image / wan 系列模型**不提供 OpenAI compatible-mode**，走 DashScope 原生接口（见阿里云官方文档《千问-图像生成与编辑 3.0 API 参考》）。此前网关 `/compatible-mode/v1/images/generations` 恒 400（`url error`）即因此所致 —— 该路径下根本没有代理图像模型。
-- `LlmClient.generate_image` 默认从对话基地址推导原生端点：`{scheme}://{host}/api/v1/services/aigc/multimodal-generation/generation`。请求体为 `input.messages[].content[{text}]` 结构，size 格式 `1024*1024`（代码自动把 `x` 转 `*`），响应从 `output.choices[0].message.content[0].image` 取 URL 并立即下载落盘（该 URL 24 小时过期）。
-- 实测可用模型：`qwen-image-2.0`、`wan2.7-image`、`wan2.7-image-pro`（`qwen-image-3.0` 在当前工作空间不存在）。
-- 若确有支持 OpenAI Images API 的图像服务，`.env` 设 `LLM_IMAGE_BASE_URL` 即整体切换为兼容模式调用。
